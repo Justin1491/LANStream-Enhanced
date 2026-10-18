@@ -1,0 +1,11 @@
+.venv*/
+__pycache__/
+*.pyc
+cache/
+build/
+dist/
+benchmark-results/
+*.log
+config.local.txt
+tools/*.exe
+tools/*.dll

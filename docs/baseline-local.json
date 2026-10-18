@@ -1,0 +1,23 @@
+{
+  "entries": 25969,
+  "enumeration": {
+    "p50_ms": 82.946,
+    "p95_ms": 82.946
+  },
+  "cold_html_ms": 108054.006,
+  "cold_status": 200,
+  "warm_html": {
+    "p50_ms": 108056.11,
+    "p95_ms": 114314.751
+  },
+  "html_bytes": 9871139,
+  "rendered_items": 25969,
+  "html_elements": 129868,
+  "python_peak_mib": 99.42,
+  "cpu_seconds": 441.188,
+  "notes": [
+    "Local filesystem/OS cache conditions; not N100/SMB acceptance.",
+    "HTML element count is server markup; browser DOM measured separately.",
+    "Python heap excludes native SQLite/Pillow allocations."
+  ]
+}
