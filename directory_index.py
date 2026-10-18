@@ -247,6 +247,7 @@ class DirectoryIndex:
         field = {'name': 'e.name COLLATE NATURAL_NAME', 'date': 'e.mtime', 'mtime': 'e.mtime', 'size': 'e.size', 'type': 'e.kind'}.get(sort, 'e.name COLLATE NATURAL_NAME')
         self._db.create_function('casefold', 1, lambda value: value.casefold(), deterministic=True)
         total = self._db.execute('SELECT count(*) ' + sql, params).fetchone()[0]
+        page = min(page, max(1, (total + page_size - 1) // page_size))
         rows = self._db.execute('SELECT e.* ' + sql + f" ORDER BY (e.kind='folder') DESC,{field} {'DESC' if descending else 'ASC'},e.name COLLATE BINARY,e.rel,e.root LIMIT ? OFFSET ?", [*params, page_size, (page - 1) * page_size]).fetchall()
         items = [{key: row[key] for key in ('name', 'rel', 'kind', 'size', 'mtime')} | {'root_id': row['root'], 'parent': row['rel'].rpartition('/')[0]} for row in rows]
         return dict(items=items, total=total, page=page, page_size=page_size, pages=(total + page_size - 1) // page_size)

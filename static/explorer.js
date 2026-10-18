@@ -48,6 +48,10 @@
     return response.json();
   }
   function render(result) {
+    if (state.page !== result.page) {
+      state.page = result.page;
+      history.replaceState(null, '', location.pathname + '?' + new URLSearchParams(state));
+    }
     if (observer) observer.disconnect();
     observer = new IntersectionObserver(entries => entries.forEach(entry => {
       if (!entry.isIntersecting) return;

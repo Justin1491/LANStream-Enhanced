@@ -41,6 +41,17 @@ class DirectoryIndexTests(unittest.TestCase):
         self.assertEqual(self.index.listing(self.root)['total'], 100)
         self.assertEqual(len(self.index.listing(self.root, page_size=1)['items']), 1)
 
+    def test_page_is_clamped_when_refresh_removes_last_page(self):
+        for name in ('one.mp4', 'two.mp4'):
+            (self.root / name).touch()
+        self.ready(page_size=1)
+        (self.root / 'two.mp4').unlink()
+        self.index.listing(self.root, refresh=True)
+        self.index.wait_for_idle()
+        result = self.index.listing(self.root, page=2, page_size=1)
+        self.assertEqual(result['page'], 1)
+        self.assertEqual(len(result['items']), 1)
+
     def test_natural_unicode_sort_filter_and_exclusion(self):
         for name in ['item10.mp4', 'item2.mp4', 'ÉCOLE.mp4', 'STRASSE.mp4']:
             (self.root / name).touch()
