@@ -2,7 +2,9 @@
 
 LANStream itself is released under **The Unlicense**.
 
-The Windows distribution of LANStream 1.0.0 includes separately licensed
+The Enhanced private test build includes FFmpeg 9.0.2 from the locally installed Gyan.dev full build and 7-Zip from the locally installed Windows package. Their license texts are included as ffmpeg-LICENSE.txt and 7zip-LICENSE.txt. Match corresponding-source requirements to these exact tools before redistribution.
+
+The Windows distribution of LANStream includes separately licensed
 third-party software. Those components are not covered by The Unlicense.
 
 ---
@@ -20,7 +22,7 @@ These executables are from the following Gyan.dev FFmpeg build:
 
 ```text
 FFmpeg 64-bit static Windows build
-Version: 2026-08-03-git-01a25f74cc-full_build-www.gyan.dev
+Version: 9.0.2-full_build-www.gyan.dev
 Build provider: https://www.gyan.dev/ffmpeg/builds/
 License: GNU General Public License version 3
 ```
@@ -34,10 +36,10 @@ remain independent third-party components under their own license.
 
 ### Corresponding Source
 
-The FFmpeg build above corresponds to FFmpeg git revision:
+The FFmpeg build above corresponds to FFmpeg release:
 
 ```text
-01a25f74cc
+9.0.2
 ```
 
 When distributing the Windows binary release, the corresponding FFmpeg source

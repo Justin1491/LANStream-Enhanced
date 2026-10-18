@@ -1,4 +1,4 @@
-LANStream for Windows
+LANStream Enhanced for Windows
 =====================
 
 LANStream runs as a normal Windows application. Docker and Python are not
@@ -14,13 +14,19 @@ LANStream\
     cache\
     _internal\
 
+Enhanced test installation
+--------------------------
+Extract to C:\LANStream-Enhanced and use port 8061. Do not replace C:\LANStream
+or its config/cache on port 8060. See docs/enhanced-guide.md and docs/status.md.
+The cache now contains durable Favorites; back it up before upgrading.
+
 Configuration
 -------------
 Edit config.txt beside LANStream.exe.
 
 Examples:
 
-port=8060
+port=8061
 use_master_password=false
 transcoder=auto
 

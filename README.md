@@ -1,8 +1,8 @@
-# LANStream
+# LANStream Enhanced
 
-LANStream is a lightweight, database-free, web-based media browser and player for local networks.
+LANStream is a lightweight, folder-native, web-based media browser and player for local networks.
 
-It is designed for people who want to open a browser, peruse a media collection, and play videos without maintaining a proper database, importing a library, matching metadata, running background scans, or really putting any effort into it at all.
+It is designed for people who want to open a browser, peruse a media collection, and play videos without importing a metadata library or changing their folders. Enhanced keeps local directory snapshots and profile-scoped favorites in SQLite.
 
 LANStream runs on Linux through Docker or as a portable Windows application. It supports direct playback whenever the browser can handle the source file and automatically falls back to hardware-accelerated or software transcoding when necessary.
 
@@ -14,6 +14,10 @@ LANStream runs on Linux through Docker or as a portable Windows application. It 
 
 <img width="1252" height="798" alt="lanstream4" src="https://github.com/user-attachments/assets/d6109107-5a9f-45f2-b647-8da761586d75" />
 
+## Enhanced edition
+
+Based on [candre23/LANStream](https://github.com/candre23/LANStream). See the [Enhanced operations guide](docs/enhanced-guide.md) for isolated port-8061 deployment, configuration, cache/favorite backups, benchmarks and rollback. See [measured status](docs/status.md) for local verification and remaining N100/SMB checks. The existing production install must stay untouched.
+
 ## Why LANStream?
 
 Most home media servers are built around a managed library. That is ideal if you want posters, metadata matching, watch history, recommendations, user profiles, and a streaming-service-style interface.
@@ -22,8 +26,8 @@ Not everybody needs all that.  If your media is already organized into folders a
 
 LANStream is
 
-- **Database-free**  
-  There is no media database to create, migrate, repair, or back up.
+- **Cached browsing**
+  SQLite snapshots avoid repeated full directory scans; back up the local database to preserve Favorites.
 - **Scan-free**  
   LANStream does not need to index your entire collection before it becomes usable. Directories are read when you browse them.
 - **Folder-native**  
@@ -33,7 +37,7 @@ LANStream is
 - **Portable**  
   The Windows build can be extracted and run as a self-contained application. The Linux version can run in Docker with configuration and cache files kept outside the container.
 - **Low-maintenance**  
-  There are no library refresh schedules, database upgrades, metadata agents, or background cataloging jobs to manage.
+  Snapshots refresh in the background after a configurable TTL. Recursive discovery is explicit and resumable.
 - **LAN-focused**  
   LANStream is optimized for simple local-network playback rather than trying to be an all-purpose cloud media ecosystem.
 
@@ -51,7 +55,10 @@ This makes it particularly useful for:
 
 - Browse ordinary folders directly from a web browser
 - Multiple configurable media roots
-- Client-side filtering of the currently displayed directory
+- Server pagination and full-folder filtering/sorting
+- List/Grid/Details with device preferences and compact video thumbnails
+- Global Unicode filename substring search with path context
+- Profile-scoped persistent video/folder favorites
 - Lazy thumbnail generation
 - Cached thumbnails and preview images
 - Dedicated browser-based video player

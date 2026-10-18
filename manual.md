@@ -1,8 +1,10 @@
-# LANStream 1.0.0 User Manual
+# LANStream Enhanced User Manual
 
-LANStream is a lightweight, database-free video browser and player for local networks.
+LANStream is a lightweight, folder-native media browser and player for local networks.
 
 This manual covers installation, configuration, everyday use, transcoding, Low Bandwidth mode, authentication, troubleshooting, and maintenance for both Windows and Linux/Docker installations.
+
+For all Enhanced-specific installation, behavior, safety, packaging and acceptance steps, start with the [Enhanced operations guide](docs/enhanced-guide.md). Existing playback/configuration details below remain applicable unless the guide states a changed default. Enhanced defaults to port 8061.
 
 ---
 
@@ -36,7 +38,7 @@ This manual covers installation, configuration, everyday use, transcoding, Low B
 
 # How LANStream Works
 
-LANStream does not maintain a media database.
+Enhanced maintains local directory snapshots and profile-scoped favorites in cache/index.sqlite3. Media files remain in their original folders.
 
 Instead, it reads your existing folder structure when you browse it. If your files are arranged like this:
 
@@ -287,7 +289,7 @@ For example:
 /opt/lanstream/cache/
 ```
 
-The cache contains generated images only. It does not contain your media database because LANStream has no media database.
+The Enhanced cache contains generated images, SQLite directory snapshots, the crawl frontier and durable favorites. Back it up; do not delete the entire cache to clear thumbnails.
 
 ## Media mounts
 
@@ -765,60 +767,7 @@ When authentication is enabled, use the LANStream logout function to clear the c
 
 # Browsing Media
 
-The home page lists all media roots available to the current profile.
-
-Select a root to browse it.
-
-LANStream displays:
-
-- folders
-- recognized video files
-- thumbnails or placeholders
-- navigation controls
-- a text filter
-
-## Folder navigation
-
-Folders are displayed alphabetically.
-
-Use:
-
-```text
-Up one level
-```
-
-to return to the parent folder.
-
-From the top of a configured root, Up one level returns to the LANStream home page.
-
-## Breadcrumb navigation
-
-LANStream displays the current path as breadcrumbs.
-
-You can select a parent breadcrumb to jump directly to that point in the folder hierarchy.
-
-## Directory filter
-
-The filter field searches only the items already loaded on the current page.
-
-It is:
-
-- case-insensitive
-- immediate
-- client-side
-- not a database search
-
-For example, typing:
-
-```text
-alien
-```
-
-shows currently displayed files and folders whose names contain `alien`.
-
-LANStream does not scan other directories in the background to perform this search.
-
-Clearing or revisiting a page resets the filter.
+Use the [Enhanced operations guide](docs/enhanced-guide.md#browse-search-and-favorites) for List/Grid/Details, full-folder filtering and sorting, pagination, indexed search, favorites, refresh, offline behavior and explicit recursive indexing. It replaces the upstream all-items page and client-only filter.
 
 ---
 
@@ -1147,7 +1096,7 @@ LANStream recreates them as needed.
 
 If a thumbnail was generated from an undesirable frame, delete the applicable cache image and revisit the directory to trigger regeneration.
 
-Deleting the entire cache does not delete or alter media files.
+Deleting the entire cache does not alter media files, but it deletes Enhanced favorites and its index. Clear only thumbs/ and posters/ when clearing generated previews.
 
 ---
 
@@ -1433,35 +1382,7 @@ Because the application image is disposable, updating should not require rebuild
 
 # Backing Up LANStream
 
-LANStream has no media database.
-
-The only important LANStream-specific user data is normally:
-
-```text
-config.txt
-```
-
-The cache is optional.
-
-## Minimum backup
-
-Back up:
-
-```text
-config.txt
-```
-
-## Optional backup
-
-Also back up:
-
-```text
-cache/
-```
-
-This avoids regenerating thumbnails after reinstalling.
-
-Your actual media remains wherever you already store and back it up.
+Preserve config.txt and the complete cache directory, including index.sqlite3 and any WAL/SHM companions. Stop Enhanced before copying the database. The SQLite file includes durable Favorites. See [backup and recovery](docs/enhanced-guide.md#backup-schema-and-index-recovery) before rebuilding or clearing anything.
 
 ---
 

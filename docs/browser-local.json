@@ -1,0 +1,23 @@
+{
+  "url": "http://127.0.0.1:8061",
+  "title": "Clip 025968.mp4 \u00b7 LANStream",
+  "first_render_ms": 1249,
+  "page_items": 100,
+  "dom_elements": 1164,
+  "mobile_width": 390,
+  "console_errors": [],
+  "checks": [
+    "list thumbnail64px",
+    "pagination bounded100",
+    "full-folder filter",
+    "browser back/forward",
+    "favorites",
+    "global search",
+    "details",
+    "grid density",
+    "mobile no overflow",
+    "view persistence",
+    "detail/player favorite",
+    "actual direct playback"
+  ]
+}

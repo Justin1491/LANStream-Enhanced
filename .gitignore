@@ -4,6 +4,7 @@ __pycache__/
 cache/
 build/
 dist/
+artifacts/
 benchmark-results/
 *.log
 config.local.txt

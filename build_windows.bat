@@ -78,6 +78,15 @@ if "%SEVENZIP_MODE%"=="7zz" (
 )
 
 copy /Y "README-WINDOWS.txt" "dist\LANStream\README-WINDOWS.txt" >nul
+copy /Y "README.md" "dist\LANStream\README.md" >nul
+copy /Y "manual.md" "dist\LANStream\manual.md" >nul
+copy /Y "LICENSE" "dist\LANStream\LICENSE" >nul
+copy /Y "THIRD_PARTY_LICENSES.md" "dist\LANStream\THIRD_PARTY_LICENSES.md" >nul
+if exist "tools\ffmpeg-LICENSE.txt" copy /Y "tools\ffmpeg-LICENSE.txt" "dist\LANStream\ffmpeg-LICENSE.txt" >nul
+if exist "tools\7zip-LICENSE.txt" copy /Y "tools\7zip-LICENSE.txt" "dist\LANStream\7zip-LICENSE.txt" >nul
+if not exist "dist\LANStream\docs" mkdir "dist\LANStream\docs"
+copy /Y "docs\*.md" "dist\LANStream\docs\" >nul
+copy /Y "docs\*.json" "dist\LANStream\docs\" >nul
 
 if not exist "dist\LANStream\cache" mkdir "dist\LANStream\cache"
 

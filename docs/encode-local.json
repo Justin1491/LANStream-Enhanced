@@ -1,0 +1,9 @@
+{
+  "backend": "software libx264",
+  "actual_encode": true,
+  "bytes": 369075,
+  "width": 320,
+  "height": 180,
+  "low_bandwidth": true,
+  "note": "Synthetic 2-second clip on development Windows; not N100/QSV verification."
+}

@@ -1,0 +1,12 @@
+{
+  "portable_executable": true,
+  "home": true,
+  "paginated_items": 100,
+  "directory_entries": 25970,
+  "indexed_search": true,
+  "byte_range": true,
+  "static_assets": true,
+  "software_encoder_startup": true,
+  "host": "loopback",
+  "port": 8061
+}

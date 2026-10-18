@@ -1,0 +1,43 @@
+{
+  "entries": 25969,
+  "enumeration": {
+    "p50_ms": 44.955,
+    "p95_ms": 44.955
+  },
+  "cold_html_ms": 23.399,
+  "cold_status": 200,
+  "cold_first_page_ms": 3367.503,
+  "warm_first_page_api": {
+    "p50_ms": 19.322,
+    "p95_ms": 19.603
+  },
+  "returned_items": 100,
+  "search": {
+    "p50_ms": 47.668,
+    "p95_ms": 49.609
+  },
+  "index_metrics": {
+    "scans_started": 1,
+    "scans_completed": 1,
+    "scans_failed": 0,
+    "cache_hits": 21,
+    "rejected": 0,
+    "pending": 0,
+    "active": 0,
+    "in_flight": 0
+  },
+  "warm_html": {
+    "p50_ms": 2.783,
+    "p95_ms": 3.125
+  },
+  "html_bytes": 3265,
+  "rendered_items": 0,
+  "html_elements": 64,
+  "python_peak_mib": null,
+  "cpu_seconds": 4.688,
+  "notes": [
+    "Local filesystem/OS cache conditions; not N100/SMB acceptance.",
+    "HTML element count is server markup; browser DOM measured separately.",
+    "Latency measured with Python heap tracing disabled."
+  ]
+}
