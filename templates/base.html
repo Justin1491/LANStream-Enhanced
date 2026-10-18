@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0d1117">
+  <meta name="lanstream-csrf" content="{{ csrf_token }}">
+  <link rel="icon" href="data:,">
   <title>{% block title %}LANStream{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
@@ -14,9 +16,11 @@
     <a class="brand" href="{{ url_for('home') }}">LANStream</a>
     {% block topbar_filter %}{% endblock %}
   </div>
+  <nav class="global-nav" aria-label="Media navigation"><a href="/search">Search</a> <a href="/favorites">Favorites</a></nav>
   {% if session.get('authenticated') %}<a class="logout" href="{{ url_for('logout') }}">Log out</a>{% endif %}
 </header>
 <main class="page">{% block content %}{% endblock %}</main>
+<script src="{{ url_for('static', filename='favorite.js') }}" defer></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

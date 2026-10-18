@@ -12,12 +12,8 @@
 <div class="folder-grid">
 {% for root in roots %}
 <a class="folder-card filter-item" data-filter-name="{{ root.label|lower }}" href="{{ url_for('browse', root_index=root.index) }}">
-{% if root.preview %}
-<div class="folder-preview"><img src="{{ url_for('folder_preview', root_index=root.index) }}" alt=""></div>
-{% else %}
 <div class="folder-icon"></div>
-{% endif %}
-<div><strong>{{ root.label }}</strong>{% if not root.exists %}<small>Path unavailable</small>{% endif %}</div>
+<div><strong>{{ root.label }}</strong><small>Open cached folder browser</small></div>
 </a>
 {% endfor %}
 </div>

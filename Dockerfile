@@ -21,7 +21,7 @@ WORKDIR /app
 COPY requirements-linux.txt /app/requirements-linux.txt
 RUN pip3 install --break-system-packages --no-cache-dir -r /app/requirements-linux.txt
 
-COPY app.py launcher.py /app/
+COPY app.py launcher.py directory_index.py image_scheduler.py /app/
 COPY templates /app/templates
 COPY static /app/static
 

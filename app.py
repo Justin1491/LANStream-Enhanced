@@ -4,7 +4,6 @@ import json
 import hashlib
 import mimetypes
 import os
-import queue
 import shutil
 import sys
 import socket
@@ -25,6 +24,9 @@ from flask import (
 )
 from PIL import Image, ImageOps
 import fitz
+from werkzeug.exceptions import HTTPException
+from directory_index import DirectoryIndex, root_id, _relative
+from image_scheduler import ImageScheduler
 
 def application_dir() -> Path:
     # For a PyInstaller onedir build, editable files belong beside LANStream.exe.
@@ -67,10 +69,15 @@ def read_config_lines() -> list[str]:
 
 def load_settings() -> dict[str, str]:
     settings = {
-        "port": "8060",
+        "port": "8061",
         "use_master_password": "false",
         "master_password": "",
         "transcoder": "auto",
+        "directory_cache_ttl": "300",
+        "directory_scan_timeout": "30",
+        "thumbnail_workers": "1",
+        "low_bandwidth_resolution": "854x480",
+        "low_bandwidth_bitrate": "2M",
     }
     for raw in read_config_lines():
         line = raw.strip()
@@ -90,7 +97,7 @@ def bool_setting(value: str) -> bool:
 
 
 SETTINGS = load_settings()
-SERVER_PORT = int(os.environ.get("LANSTREAM_PORT", SETTINGS.get("port", "8060")))
+SERVER_PORT = int(os.environ.get("LANSTREAM_PORT", SETTINGS.get("port", "8061")))
 APP_PASSWORD = os.environ.get("LANSTREAM_PASSWORD", SETTINGS.get("master_password", ""))
 USE_MASTER_PASSWORD = bool_setting(
     os.environ.get("LANSTREAM_USE_MASTER_PASSWORD", SETTINGS.get("use_master_password", "false"))
@@ -214,69 +221,10 @@ stream_tracker = StreamTracker()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 
-class ImageScheduler:
-    def __init__(self, workers: int = 2):
-        self._queue = queue.PriorityQueue()
-        self._lock = threading.Lock()
-        self._generation = 0
-        self._sequence = 0
-        self._queued: set[str] = set()
-        self._failed: set[str] = set()
-        for i in range(workers):
-            threading.Thread(
-                target=self._worker, name=f"image-worker-{i}", daemon=True
-            ).start()
-
-    def new_generation(self) -> int:
-        with self._lock:
-            self._generation += 1
-            self._failed.clear()
-            return self._generation
-
-    def current_generation(self) -> int:
-        with self._lock:
-            return self._generation
-
-    def mark_failed(self, generation: int, output: Path) -> None:
-        key = str(output)
-        with self._lock:
-            if generation == self._generation:
-                self._failed.add(key)
-
-    def failed(self, generation: int, output: Path) -> bool:
-        key = str(output)
-        with self._lock:
-            return generation == self._generation and key in self._failed
-
-    def submit(self, generation: int, priority: int, source: Path, output: Path, width: int) -> None:
-        if output.exists():
-            return
-        key = str(output)
-        with self._lock:
-            if (
-                generation != self._generation
-                or key in self._queued
-                or key in self._failed
-            ):
-                return
-            self._sequence += 1
-            seq = self._sequence
-            self._queued.add(key)
-        self._queue.put((priority, seq, generation, key, source, output, width))
-
-    def _worker(self):
-        while True:
-            priority, seq, generation, key, source, output, width = self._queue.get()
-            try:
-                if generation == self.current_generation():
-                    generate_image(source, output, width, generation, self)
-            finally:
-                with self._lock:
-                    self._queued.discard(key)
-                self._queue.task_done()
-
-
-image_scheduler = ImageScheduler(2)
+image_scheduler = ImageScheduler(
+    lambda *args: generate_image(*args), workers=int(SETTINGS['thumbnail_workers']),
+    streaming=lambda: bool(stream_tracker.snapshot()),
+)
 
 
 def profile_id_for_password(password: str) -> str:
@@ -490,7 +438,10 @@ def safe_path(root: Path, relative: str) -> Path:
 def media_kind(path: Path) -> str | None:
     if not path.is_file():
         return None
-    suffix = path.suffix.lower()
+    return kind_for_suffix(path.suffix.lower())
+
+
+def kind_for_suffix(suffix):
     if suffix in VIDEO_EXTENSIONS:
         return "video"
     if suffix in IMAGE_EXTENSIONS:
@@ -506,6 +457,13 @@ def media_kind(path: Path) -> str | None:
 
 def is_video(path: Path) -> bool:
     return media_kind(path) == "video"
+
+
+directory_index = DirectoryIndex(
+    CACHE_DIR / 'index.sqlite3', kind_for_suffix,
+    ttl=max(1, float(SETTINGS['directory_cache_ttl'])),
+    scan_timeout=max(1, float(SETTINGS['directory_scan_timeout'])),
+)
 
 
 def natural_sort_key(value: str) -> list[Any]:
@@ -773,7 +731,7 @@ def _generate_nonvideo_thumbnail(source: Path, output: Path, width: int) -> bool
 
 
 def generate_image(source: Path, output: Path, width: int, generation: int, scheduler: ImageScheduler):
-    if generation != scheduler.current_generation():
+    if not scheduler.is_current(source, output):
         return
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -782,7 +740,7 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
     try:
         if media_kind(source) != "video":
             if _generate_nonvideo_thumbnail(source, tmp, width):
-                if generation == scheduler.current_generation():
+                if scheduler.is_current(source, output):
                     tmp.replace(output)
             return
 
@@ -790,7 +748,7 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
         candidates = screenshot_candidates(info)
 
         for stamp in candidates:
-            if generation != scheduler.current_generation():
+            if not scheduler.is_current(source, output):
                 return
             black_percent = frame_black_percent(source, stamp)
             if black_percent is not None and black_percent >= 85:
@@ -806,7 +764,7 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
             if (
                 proc.returncode == 0
                 and tmp.exists()
-                and generation == scheduler.current_generation()
+                and scheduler.is_current(source, output)
             ):
                 tmp.replace(output)
                 return
@@ -824,7 +782,7 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
         if (
             proc.returncode == 0
             and tmp.exists()
-            and generation == scheduler.current_generation()
+            and scheduler.is_current(source, output)
         ):
             tmp.replace(output)
     except Exception as exc:
@@ -978,6 +936,8 @@ def selected_transcoder(force_refresh: bool = False) -> dict:
 
 @app.before_request
 def password_gate():
+    if request.path.startswith('/api/') and '//' in request.path:
+        abort(403)
     if request.endpoint in {"login", "static"}:
         return
 
@@ -985,7 +945,9 @@ def password_gate():
         # Passwordless LAN mode. No session is needed.
         return
 
-    if not session.get("authenticated"):
+    if not session.get("authenticated") or not active_profile():
+        if request.path.startswith("/api/"):
+            return jsonify(error="Sign in required"), 401
         return redirect(url_for("login", next=request.path))
 
 
@@ -1023,121 +985,211 @@ def logout():
     return redirect(url_for("login"))
 
 
-@app.route("/")
-def home():
-    image_scheduler.new_generation()
-    roots = load_roots()
-    items = [
-        {
-            "index": i,
-            "label": root_label(p, i),
-            "exists": p.is_dir(),
-            "preview": bool(folder_cached_preview(i, "", recursive=True)),
-        }
-        for i, p in enumerate(roots)
-        if not path_is_excluded(p)
-    ]
-    items.sort(key=lambda item: item["label"].casefold())
-    return render_template("home.html", roots=items)
+@app.context_processor
+def explorer_template_context():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(24)
+    favorite_current = False
+    if request.endpoint in {'video_detail', 'player'}:
+        profile, root, relative, _ = explorer_context(request.view_args['root_index'], request.view_args['relpath'])
+        favorite_current = directory_index.favorite_flags(profile['id'], [{'root_id': root_id(root), 'rel': relative}])[0]
+    return {'csrf_token': session['csrf_token'], 'favorite_current': favorite_current}
 
 
-@app.route("/browse/<int:root_index>/", defaults={"relpath": ""})
-@app.route("/browse/<int:root_index>/<path:relpath>")
-def browse(root_index, relpath):
-    generation = image_scheduler.new_generation()
-    root = get_root(root_index)
-    current = safe_path(root, relpath)
-    if not current.is_dir():
-        abort(404)
+@app.after_request
+def private_media_cache(response):
+    if request.endpoint != 'static':
+        response.headers['Cache-Control'] = 'private, no-store'
+    return response
 
-    folders: list[dict[str, Any]] = []
-    media: dict[str, list[dict[str, Any]]] = {
-        "video": [], "image": [], "pdf": [], "comic": [], "text": [],
-    }
+
+def explorer_context(root_index, relative=''):
+    # Cached metadata must be authorized without waiting for a network filesystem.
     try:
-        entries = list(current.iterdir())
-    except OSError as exc:
-        return render_template("error.html", message=f"Unable to read folder: {exc}"), 500
-
-    for entry in entries:
+        relative = _relative(relative)
+    except ValueError:
+        abort(403)
+    relative = '' if relative == '.' else relative
+    profile = active_profile()
+    if not profile or root_index < 0 or root_index >= len(profile['roots']):
+        abort(404)
+    root = profile['roots'][root_index]
+    base = os.path.normcase(os.path.abspath(root))
+    excluded = []
+    for entry in profile['excluded']:
+        candidate = os.path.normcase(os.path.abspath(entry))
         try:
-            if path_is_excluded(entry):
-                continue
-            if entry.is_dir():
-                folder_rel = entry.relative_to(root).as_posix()
-                folders.append({
-                    "name": entry.name,
-                    "rel": folder_rel,
-                    "preview": bool(folder_cached_preview(root_index, folder_rel)),
-                })
-                continue
-
-            kind = media_kind(entry)
-            if not kind:
-                continue
-
-            rel = entry.relative_to(root).as_posix()
-            item: dict[str, Any] = {"name": entry.name, "rel": rel, "kind": kind}
-            if kind != "text":
-                thumb = cache_path("thumbs", root_index, root, entry)
-                poster = cache_path("posters", root_index, root, entry) if kind == "video" else None
-                item.update({
-                    "thumb_ready": thumb.exists() or bool(poster and poster.exists()),
-                    "_source": entry,
-                    "_thumb": thumb,
-                })
-            media[kind].append(item)
-        except OSError:
+            common = os.path.commonpath([base, candidate])
+        except ValueError:
             continue
+        if common == candidate:
+            abort(404)
+        if common == base:
+            item = os.path.relpath(candidate, base).replace(os.sep, '/')
+            excluded.append(item)
+            if relative.casefold() == item.casefold() or relative.casefold().startswith(item.casefold() + '/'):
+                abort(404)
+    return profile, root, relative, tuple(excluded)
 
-    folders.sort(key=lambda x: natural_sort_key(x["name"]))
-    for values in media.values():
-        values.sort(key=lambda x: natural_sort_key(x["name"]))
 
-    # Queue only the first visible-ish supported media items. Additional
-    # thumbnails are requested lazily as cards approach the viewport.
-    primed = 0
-    for kind in ("video", "image", "pdf", "comic"):
-        for item in media[kind]:
-            if primed >= 12:
-                break
-            if not item["thumb_ready"]:
-                image_scheduler.submit(generation, 10, item["_source"], item["_thumb"], 360)
-            primed += 1
-        if primed >= 12:
-            break
+def explorer_roots():
+    profile = active_profile()
+    roots, excluded, indexes = [], {}, {}
+    for number, root in enumerate(profile['roots'] if profile else []):
+        try:
+            _, _, _, blocked = explorer_context(number)
+        except Exception as exc:
+            if getattr(exc, 'code', None) == 404:
+                continue
+            raise
+        roots.append(root)
+        excluded[root_id(root)] = blocked
+        indexes[root_id(root)] = number
+    return profile, roots, excluded, indexes
 
-    for values in media.values():
-        for item in values:
-            item.pop("_source", None)
-            item.pop("_thumb", None)
 
-    crumbs = [{"name": root_label(root, root_index), "url": url_for("browse", root_index=root_index)}]
-    acc = Path()
-    for part in Path(relpath).parts:
-        acc /= part
-        crumbs.append({"name": part, "url": url_for("browse", root_index=root_index, relpath=acc.as_posix())})
+def explorer_page_args():
+    try:
+        page = max(1, min(1000000, int(request.args.get('page', '1'))))
+    except ValueError:
+        abort(400)
+    return dict(page=page, page_size=100)
 
-    if relpath:
-        parent = Path(relpath).parent
-        up_rel = "" if str(parent) == "." else parent.as_posix()
-        up_url = url_for("browse", root_index=root_index, relpath=up_rel)
-    else:
-        up_url = url_for("home")
 
-    return render_template(
-        "browse.html",
-        root_index=root_index,
-        folders=folders,
-        videos=media["video"],
-        images=media["image"],
-        pdfs=media["pdf"],
-        comics=media["comic"],
-        texts=media["text"],
-        crumbs=crumbs,
-        generation=generation,
-        up_url=up_url,
-    )
+def explorer_items(result):
+    profile, roots, excluded, indexes = explorer_roots()
+    flags = directory_index.favorite_flags(profile['id'], result['items']) if profile else []
+    routes = dict(folder='browse', video='video_detail', image='image_viewer',
+                  pdf='document_viewer', comic='document_viewer', text='text_viewer')
+    for number, item in enumerate(result['items']):
+        index = indexes[item['root_id']]
+        root = profile['roots'][index]
+        item.update(root_index=index, root_label=root_label(root, index),
+                    favorite=flags[number],
+                    url=url_for(routes[item['kind']], root_index=index, relpath=item['rel']),
+                    folder_url=url_for('browse', root_index=index, relpath=item['parent']),
+                    location='/'.join(filter(None, (root_label(root, index), item['parent']))))
+        if item['kind'] not in {'folder', 'text'}:
+            item['thumb_url'] = url_for('thumbnail', root_index=index, relpath=item['rel'])
+            item['ready_url'] = url_for('image_ready', kind='thumbs', root_index=index, relpath=item['rel'])
+    return result
+
+
+def explorer_write_check():
+    token = session.get('csrf_token', '')
+    if not token or not secrets.compare_digest(request.headers.get('X-LANStream-CSRF', ''), token):
+        abort(403)
+
+
+@app.route('/')
+def home():
+    profile, roots, excluded, indexes = explorer_roots()
+    items = [dict(index=indexes[root_id(root)], label=root_label(root, indexes[root_id(root)])) for root in roots]
+    items.sort(key=lambda item: item['label'].casefold())
+    return render_template('home.html', roots=items)
+
+
+@app.route('/browse/<int:root_index>/', defaults={'relpath': ''})
+@app.route('/browse/<int:root_index>/<path:relpath>')
+def browse(root_index, relpath):
+    _, root, relpath, _ = explorer_context(root_index, relpath)
+    crumbs = [dict(name=root_label(root, root_index), url=url_for('browse', root_index=root_index))]
+    parts = relpath.split('/') if relpath else []
+    for index, part in enumerate(parts):
+        crumbs.append(dict(name=part, url=url_for('browse', root_index=root_index, relpath='/'.join(parts[:index + 1]))))
+    return render_template('browse.html', root_index=root_index, relpath=relpath,
+                           crumbs=crumbs, mode='browse',
+                           api_url=url_for('browse_api', root_index=root_index, relpath=relpath),
+                           up_url=url_for('browse', root_index=root_index, relpath='/'.join(parts[:-1])) if parts else url_for('home'))
+
+
+@app.route('/api/browse/<int:root_index>/', defaults={'relpath': ''})
+@app.route('/api/browse/<int:root_index>/<path:relpath>')
+def browse_api(root_index, relpath):
+    _, root, relpath, excluded = explorer_context(root_index, relpath)
+    result = directory_index.listing(root, relpath, **explorer_page_args(),
+        sort=request.args.get('sort', 'name'), descending=request.args.get('direction') == 'desc',
+        query=request.args.get('q', '')[:500], excluded=excluded)
+    return jsonify(explorer_items(result))
+
+
+@app.post('/api/refresh/<int:root_index>/', defaults={'relpath': ''})
+@app.post('/api/refresh/<int:root_index>/<path:relpath>')
+def refresh_api(root_index, relpath):
+    explorer_write_check()
+    _, root, relpath, excluded = explorer_context(root_index, relpath)
+    return jsonify(directory_index.listing(root, relpath, excluded=excluded, refresh=True))
+
+
+@app.route('/search')
+@app.route('/favorites')
+def collection_page():
+    mode = 'favorites' if request.path == '/favorites' else 'search'
+    return render_template('browse.html', mode=mode, crumbs=[], root_index=None,
+                           relpath='', api_url=url_for('favorites_api' if mode == 'favorites' else 'search_api'),
+                           up_url=url_for('home'))
+
+
+@app.route('/api/search')
+def search_api():
+    _, roots, excluded, _ = explorer_roots()
+    scope_root, scope_relative, recursive = None, '', True
+    scope = request.args.get('scope', 'all')
+    if scope not in {'all', 'subtree', 'folder'}:
+        abort(400)
+    if scope != 'all':
+        try:
+            index = int(request.args.get('root', '0'))
+        except ValueError:
+            abort(400)
+        _, scope_root, scope_relative, _ = explorer_context(index, request.args.get('relative', ''))
+        recursive = scope == 'subtree'
+    result = directory_index.search(roots, query=request.args.get('q', '')[:500],
+        excluded=excluded, scope_root=scope_root, scope_relative=scope_relative,
+        recursive=recursive, **explorer_page_args())
+    result['crawls'] = directory_index.crawl_status(active_profile()['id'], roots) if active_profile() else []
+    return jsonify(explorer_items(result))
+
+
+@app.route('/api/favorites', methods=['GET', 'POST'])
+def favorites_api():
+    profile, roots, excluded, _ = explorer_roots()
+    if not profile:
+        abort(404)
+    if request.method == 'POST':
+        explorer_write_check()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict) or type(data.get('root_index')) is not int or type(data.get('enabled')) is not bool:
+            abort(400)
+        _, root, relative, _ = explorer_context(data['root_index'], data.get('rel', ''))
+        kind = data.get('kind')
+        if not relative or kind not in {'folder', 'video'}:
+            abort(400)
+        if data['enabled']:
+            source = safe_path(root, relative)
+            if (kind == 'folder' and not source.is_dir()) or (kind == 'video' and not is_video(source)):
+                abort(404)
+        directory_index.set_favorite(profile['id'], root, relative, kind, Path(relative).name, data['enabled'])
+        return jsonify(favorite=data['enabled'])
+    return jsonify(explorer_items(directory_index.favorites(profile['id'], roots, excluded=excluded, **explorer_page_args())))
+
+
+@app.route('/api/index/<int:root_index>', methods=['GET', 'POST'])
+def indexing_api(root_index):
+    profile, root, relative, excluded = explorer_context(root_index, request.args.get('relative', ''))
+    if request.method == 'POST':
+        explorer_write_check()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            abort(400)
+        action = data.get('action')
+        if action in {'start', 'resume'}:
+            directory_index.crawl_start(profile['id'], root, relative, excluded=excluded)
+        elif action == 'pause':
+            directory_index.crawl_pause(profile['id'], root, True)
+        else:
+            abort(400)
+    return jsonify(crawls=directory_index.crawl_status(profile['id'], [root]))
 
 
 @app.route("/image/<int:root_index>/<path:relpath>")
@@ -1523,49 +1575,37 @@ def media_file(root_index, relpath):
 
 def best_cached_image(root_index: int, root: Path, source: Path, requested_kind: str) -> Path | None:
     requested = cache_path(requested_kind, root_index, root, source)
-    if requested.exists():
+    if image_scheduler.cached(source, requested):
         return requested
     if requested_kind == "thumbs":
         poster = cache_path("posters", root_index, root, source)
-        if poster.exists():
+        if image_scheduler.cached(source, poster):
             return poster
     return None
 
 
-def folder_cached_preview(
-    root_index: int,
-    folder_rel: str,
-    recursive: bool = False,
-) -> Path | None:
-    relative = Path(folder_rel)
-    for kind in ("thumbs", "posters"):
-        root = get_root(root_index)
-        cache_dir = cache_root_dir(kind, root) / relative
+def folder_cached_preview(root_index: int, folder_rel: str, recursive: bool = False) -> Path | None:
+    root = get_root(root_index)
+    for kind in ('thumbs', 'posters'):
+        cache_base = cache_root_dir(kind, root)
         try:
-            if not cache_dir.is_dir():
-                continue
-
-            candidates = [
-                entry for entry in cache_dir.iterdir()
-                if entry.is_file() and entry.suffix.lower() == ".jpg"
-            ]
-            if candidates:
-                candidates.sort(key=lambda path: natural_sort_key(path.name))
-                return candidates[0]
-
-            if recursive:
-                for current, dirnames, filenames in os.walk(cache_dir):
-                    dirnames.sort(key=natural_sort_key)
-                    jpgs = [
-                        name for name in filenames
-                        if Path(name).suffix.lower() == ".jpg"
-                    ]
-                    if jpgs:
-                        jpgs.sort(key=natural_sort_key)
-                        return Path(current) / jpgs[0]
+            for current, directories, names in os.walk(cache_base / Path(folder_rel)):
+                if not recursive:
+                    directories.clear()
+                directories.sort(key=natural_sort_key)
+                for name in sorted(names, key=natural_sort_key):
+                    if not name.lower().endswith('.jpg'):
+                        continue
+                    preview = Path(current) / name
+                    relative = preview.relative_to(cache_base).with_name(name[:-4]).as_posix()
+                    try:
+                        source = safe_path(root, relative)
+                    except HTTPException:
+                        continue
+                    if image_scheduler.cached(source, preview):
+                        return preview
         except OSError:
             continue
-
     return None
 
 
@@ -1615,9 +1655,9 @@ def poster(root_index, relpath):
     if not is_video(source):
         abort(404)
     out = cache_path("posters", root_index, root, source)
-    if not out.exists():
+    if not image_scheduler.cached(source, out):
         abort(404)
-    return send_file(out, mimetype="image/jpeg", conditional=True, max_age=86400)
+    return send_file(out, mimetype="image/jpeg", conditional=True, max_age=0)
 
 
 @app.route("/api/image-ready/<kind>/<int:root_index>/<path:relpath>")
@@ -1642,13 +1682,14 @@ def image_ready(kind, root_index, relpath):
         if source_kind != "video":
             abort(404)
         out = cache_path("posters", root_index, root, source)
-        found = out if out.exists() else None
+        found = out if image_scheduler.cached(source, out) else None
         width, priority = 960, 0
 
     current = generation == image_scheduler.current_generation()
     failed = image_scheduler.failed(generation, out) if current else False
-    if not found and current and not failed:
+    if not found and current:
         image_scheduler.submit(generation, priority, source, out, width)
+        failed = image_scheduler.failed(generation, out)
     return jsonify({
         "ready": bool(found),
         "current": current,
@@ -1661,6 +1702,7 @@ def transcode_command(
     source: Path,
     audio_index: int | None,
     start: float,
+    low: bool = False,
 ) -> list[str]:
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "error"]
 
@@ -1730,8 +1772,29 @@ def transcode_command(
             "-g", "48",
         ]
 
+    if low:
+        resolution = SETTINGS['low_bandwidth_resolution']
+        bitrate = SETTINGS['low_bandwidth_bitrate']
+        if not re.fullmatch(r'[1-9][0-9]{1,3}x[1-9][0-9]{1,3}', resolution):
+            resolution = '854x480'
+        if not re.fullmatch(r'[1-9][0-9]*(?:[kKmM])?', bitrate):
+            bitrate = '2M'
+        width, height = resolution.split('x')
+        scale = f"scale=w='min(iw,{width})':h='min(ih,{height})':force_original_aspect_ratio=decrease:force_divisible_by=2"
+        position = cmd.index('-vf') + 1
+        cmd[position] = scale + ',' + cmd[position]
+        if '-b:v' in cmd:
+            position = cmd.index('-b:v')
+            del cmd[position:position + 2]
+        if backend == 'amf':
+            cmd[cmd.index('-rc') + 1] = 'vbr_peak'
+        cmd += ['-b:v', bitrate, '-maxrate', bitrate, '-bufsize', bitrate]
+        for option in ('-global_quality', '-crf', '-cq', '-qp', '-qp_i', '-qp_p'):
+            if option in cmd:
+                position = cmd.index(option)
+                del cmd[position:position + 2]
     if audio_index is not None:
-        cmd += ["-c:a", "aac", "-b:a", "160k", "-ac", "2"]
+        cmd += ['-c:a', 'aac', '-b:a', '128k' if low else '160k', '-ac', '2']
 
     cmd += [
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
@@ -1769,7 +1832,7 @@ def transcode(root_index, relpath):
         except ValueError:
             abort(400)
 
-    cmd = transcode_command(transcoder["key"], source, audio_index, start)
+    cmd = transcode_command(transcoder["key"], source, audio_index, start, low=request.args.get("low") == "1")
     app.logger.info("Starting %s transcode: %s", transcoder["label"], " ".join(cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
 

@@ -2,6 +2,8 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark"><meta name="theme-color" content="#05070a">
+<meta name="lanstream-csrf" content="{{ csrf_token }}">
+<link rel="icon" href="data:,">
 <title>{{ filename }} · LANStream</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head><body class="player-body">
@@ -9,6 +11,7 @@
 <div class="player-top">
 <a class="player-back" href="{{ url_for('video_detail', root_index=root_index, relpath=relpath) }}">← Back to details</a>
 <div class="player-title">{{ filename }}</div>
+{% include 'favorite_button.html' %}
 <button id="fullscreenTop" type="button" aria-label="Enter fullscreen">Fullscreen</button>
 </div>
 <div class="video-stage" id="videoStage"><video id="video" playsinline preload="metadata"></video>
@@ -25,11 +28,11 @@
 <button id="back30" type="button" title="Back 30 seconds" aria-label="Back 30 seconds">&lt;&lt;</button>
 <button id="forward30" type="button" title="Forward 30 seconds" aria-label="Forward 30 seconds">&gt;&gt;</button>
 </div>
-{% if audios %}<div class="quality-mode" role="radiogroup" aria-label="Stream quality">
+<div class="quality-mode" role="radiogroup" aria-label="Stream quality">
 <label><input type="radio" name="qualityMode" value="normal" checked> Normal</label>
 <label><input type="radio" name="qualityMode" value="low"> Low Bandwidth</label>
 </div>
-<select id="audioSelect" title="Audio" aria-label="Audio track">{% for a in audios %}
+{% if audios %}<select id="audioSelect" title="Audio" aria-label="Audio track">{% for a in audios %}
 <option value="{{ a.index }}">{{ a.language }} · {{ a.codec }}{% if a.title %} · {{ a.title }}{% endif %}</option>
 {% endfor %}</select>{% endif %}
 {% set text_subs = subtitles | selectattr("text_supported") | list %}
@@ -146,4 +149,4 @@ document.addEventListener("keydown",event=>{
 document.addEventListener("fullscreenchange",updateFullscreenState);
 document.addEventListener("webkitfullscreenchange",updateFullscreenState);
 window.addEventListener("DOMContentLoaded",()=>{start(0);updateFullscreenState();});
-</script></body></html>
+</script><script src="{{ url_for('static', filename='favorite.js') }}" defer></script></body></html>

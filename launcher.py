@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import sys
+import os
 
 from waitress import serve
 
@@ -32,6 +33,6 @@ if __name__ == "__main__":
     print("Press Ctrl+C to stop.")
     print("")
     try:
-        serve(app, host="0.0.0.0", port=SERVER_PORT, threads=8)
+        serve(app, host=os.environ.get('LANSTREAM_HOST', '0.0.0.0'), port=SERVER_PORT, threads=8)
     except KeyboardInterrupt:
         pass

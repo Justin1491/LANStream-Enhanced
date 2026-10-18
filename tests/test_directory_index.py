@@ -1,6 +1,8 @@
 import os
 import sys
 import subprocess
+import sqlite3
+from contextlib import closing
 import tempfile
 import threading
 import time
@@ -121,12 +123,12 @@ class DirectoryIndexTests(unittest.TestCase):
         self.assertEqual(self.ready()['total'], 0)
         self.assertEqual(self.ready('link')['state'], 'error')
 
-    def test_streams_25969_entries_and_filters_before_paging(self):
+    def stream_listing(self, count):
         class Stream:
             def __enter__(self):
                 return (SimpleNamespace(name=f'video{n}.mp4', is_symlink=lambda: False,
                         stat=lambda **kw: SimpleNamespace(st_mode=0o100644, st_size=10, st_mtime=1))
-                        for n in range(25969))
+                        for n in range(count))
 
             def __exit__(self, *args):
                 pass
@@ -134,12 +136,36 @@ class DirectoryIndexTests(unittest.TestCase):
         with patch('directory_index.os.scandir', return_value=Stream()):
             self.index.listing(self.root)
             self.assertTrue(self.index.wait_for_idle())
+
+    def test_streams_25969_entries_and_filters_before_paging(self):
+        self.stream_listing(25969)
         result = self.index.listing(self.root, page=260)
         self.assertEqual(result['total'], 25969)
         self.assertEqual(len(result['items']), 69)
         result = self.index.listing(self.root, query='video25968', page_size=1)
         self.assertEqual(result['total'], 1)
         self.assertEqual(result['items'][0]['name'], 'video25968.mp4')
+
+    def test_streams_hundred_thousand_entries_into_bounded_pages(self):
+        self.stream_listing(100000)
+        result = self.index.listing(self.root, page=1000)
+        self.assertEqual(result['total'], 100000)
+        self.assertEqual(len(result['items']), 100)
+        self.assertEqual(result['items'][-1]['name'], 'video99999.mp4')
+
+    def test_corrupt_or_unknown_schema_fails_without_deleting_data(self):
+        broken = Path(self.tmp.name) / 'broken.sqlite3'
+        broken.write_bytes(b'not a database; preserve this file')
+        with self.assertRaises(sqlite3.DatabaseError):
+            DirectoryIndex(broken, lambda suffix: None)
+        self.assertEqual(broken.read_bytes(), b'not a database; preserve this file')
+        future = Path(self.tmp.name) / 'future.sqlite3'
+        with closing(sqlite3.connect(future)) as connection:
+            connection.execute('PRAGMA user_version=99')
+        with self.assertRaises(ValueError):
+            DirectoryIndex(future, lambda suffix: None)
+        with closing(sqlite3.connect(future)) as connection:
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 99)
 
     def test_failed_partial_snapshot_never_replaces_last_good(self):
         (self.root / 'original.mp4').touch()

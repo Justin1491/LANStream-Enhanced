@@ -46,32 +46,35 @@ class DirectoryIndex:
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._db = sqlite3.connect(str(db_path), check_same_thread=False, timeout=5)
-        self._db.row_factory = sqlite3.Row
-        self._db.create_function('casefold', 1, lambda value: value.casefold(), deterministic=True)
-        self._db.create_collation('NATURAL_NAME', lambda a, b: (_natural(a) > _natural(b)) - (_natural(a) < _natural(b)))
-        self._db.execute('PRAGMA journal_mode=WAL')
-        schema = self._db.execute('PRAGMA user_version').fetchone()[0]
-        if schema not in (0, 1):
+        try:
+            self._db.row_factory = sqlite3.Row
+            self._db.create_function('casefold', 1, lambda value: value.casefold(), deterministic=True)
+            self._db.create_collation('NATURAL_NAME', lambda a, b: (_natural(a) > _natural(b)) - (_natural(a) < _natural(b)))
+            self._db.execute('PRAGMA journal_mode=WAL')
+            schema = self._db.execute('PRAGMA user_version').fetchone()[0]
+            if schema not in (0, 1):
+                raise ValueError('Unsupported directory index schema')
+            self._db.executescript('''
+                CREATE TABLE IF NOT EXISTS folders(root TEXT, directory TEXT, version TEXT,
+                    updated REAL, PRIMARY KEY(root,directory));
+                CREATE TABLE IF NOT EXISTS entries(root TEXT, directory TEXT, version TEXT,
+                    name TEXT, rel TEXT, kind TEXT, size INTEGER, mtime REAL, folded TEXT,
+                    PRIMARY KEY(root,directory,version,name));
+                CREATE TABLE IF NOT EXISTS favorites(profile TEXT, root TEXT, rel TEXT,
+                    kind TEXT, name TEXT, PRIMARY KEY(profile,root,rel));
+                CREATE INDEX IF NOT EXISTS entries_name_order ON entries
+                    (root,directory,version,(kind='folder') DESC,name COLLATE NATURAL_NAME);
+                CREATE TABLE IF NOT EXISTS crawls(profile TEXT,root TEXT,path TEXT,relative TEXT,
+                    excluded TEXT,paused INTEGER,PRIMARY KEY(profile,root));
+                CREATE TABLE IF NOT EXISTS crawl_frontier(profile TEXT,root TEXT,directory TEXT,
+                    state TEXT,PRIMARY KEY(profile,root,directory));
+                UPDATE crawls SET paused=1;
+                UPDATE crawl_frontier SET state='pending' WHERE state='scanning';
+                PRAGMA user_version=1;
+            ''')
+        except Exception:
             self._db.close()
-            raise ValueError('Unsupported directory index schema')
-        self._db.executescript('''
-            CREATE TABLE IF NOT EXISTS folders(root TEXT, directory TEXT, version TEXT,
-                updated REAL, PRIMARY KEY(root,directory));
-            CREATE TABLE IF NOT EXISTS entries(root TEXT, directory TEXT, version TEXT,
-                name TEXT, rel TEXT, kind TEXT, size INTEGER, mtime REAL, folded TEXT,
-                PRIMARY KEY(root,directory,version,name));
-            CREATE TABLE IF NOT EXISTS favorites(profile TEXT, root TEXT, rel TEXT,
-                kind TEXT, name TEXT, PRIMARY KEY(profile,root,rel));
-            CREATE INDEX IF NOT EXISTS entries_name_order ON entries
-                (root,directory,version,(kind='folder') DESC,name COLLATE NATURAL_NAME);
-            CREATE TABLE IF NOT EXISTS crawls(profile TEXT,root TEXT,path TEXT,relative TEXT,
-                excluded TEXT,paused INTEGER,PRIMARY KEY(profile,root));
-            CREATE TABLE IF NOT EXISTS crawl_frontier(profile TEXT,root TEXT,directory TEXT,
-                state TEXT,PRIMARY KEY(profile,root,directory));
-            UPDATE crawls SET paused=1;
-            UPDATE crawl_frontier SET state='pending' WHERE state='scanning';
-            PRAGMA user_version=1;
-        ''')
+            raise
         self._pending = deque()
         self._jobs = {}
         self._hosts = set()

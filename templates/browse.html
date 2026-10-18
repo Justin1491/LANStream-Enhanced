@@ -1,123 +1,25 @@
 {% extends "base.html" %}
-{% block topbar_filter %}
-<div class="filter-box" title="Filter this folder">
-  <span class="filter-icon" aria-hidden="true"></span>
-  <input id="folderFilter" type="text" autocomplete="off" spellcheck="false" placeholder="Filter">
-</div>
-{% endblock %}
+{% block title %}{{ 'Favorites' if mode == 'favorites' else 'Search' if mode == 'search' else 'Browse' }} · LANStream Enhanced{% endblock %}
 {% block content %}
-<a class="back-link" href="{{ up_url }}">← Up one level</a>
-<nav class="crumbs">
-{% for crumb in crumbs %}
-<a href="{{ crumb.url }}">{{ crumb.name }}</a>{% if not loop.last %}<span>/</span>{% endif %}
-{% endfor %}
-</nav>
-
-{% if folders %}
-<h2>Folders</h2><div class="folder-grid">
-{% for folder in folders %}
-<a class="folder-card filter-item" data-filter-name="{{ folder.name|lower }}" href="{{ url_for('browse', root_index=root_index, relpath=folder.rel) }}">
-{% if folder.preview %}
-<div class="folder-preview"><img src="{{ url_for('folder_preview', root_index=root_index, relpath=folder.rel) }}" alt=""></div>
-{% else %}
-<div class="folder-icon"></div>
-{% endif %}
-<strong>{{ folder.name }}</strong></a>
-{% endfor %}
+<link rel="stylesheet" href="{{ url_for('static', filename='explorer.css') }}">
+<a class="back-link" href="{{ up_url }}">← {{ 'Up one level' if mode == 'browse' else 'Media roots' }}</a>
+<nav class="crumbs" aria-label="Folder path">{% for crumb in crumbs %}<a href="{{ crumb.url }}">{{ crumb.name }}</a>{% if not loop.last %}<span>/</span>{% endif %}{% endfor %}</nav>
+<section id="explorer" data-api="{{ api_url }}" data-mode="{{ mode }}" data-root="{{ root_index if root_index is not none else '' }}" data-relative="{{ relpath }}">
+<div class="explorer-heading"><h1>{{ 'Favorites' if mode == 'favorites' else 'Search filenames' if mode == 'search' else crumbs[-1].name }}</h1>{% if mode == 'browse' %}<a href="/search?root={{ root_index }}&amp;relative={{ relpath|urlencode }}">Search from here</a>{% endif %}</div>
+<div class="explorer-toolbar">
+{% if mode != 'favorites' %}<label class="explorer-query">{{ 'Filename contains' if mode == 'search' else 'Filter entire folder' }}<input id="explorerQuery" type="search" autocomplete="off" maxlength="500" placeholder="Any part of a filename"></label>{% endif %}
+{% if mode == 'search' %}<label>Search scope<select id="searchScope"><option value="all">All indexed roots</option><option value="subtree">Current subtree</option><option value="folder">Current folder</option></select></label>{% endif %}
+{% if mode == 'browse' %}<label>Sort<select id="explorerSort"><option value="name">Name</option><option value="date">Modified</option><option value="size">Size</option><option value="type">Type</option></select></label><button id="sortDirection" type="button" aria-label="Toggle sort direction">Ascending</button><button id="refreshFolder" type="button">Refresh folder</button>{% endif %}
+<div class="view-controls" role="group" aria-label="View"><button type="button" data-view="list" aria-pressed="false">List</button><button type="button" data-view="grid" aria-pressed="false">Grid</button><button type="button" data-view="details" aria-pressed="false">Details</button></div>
+<label id="densityControl">Grid size<input id="gridDensity" type="range" min="140" max="280" step="20" value="180"></label>
 </div>
-{% endif %}
-
-{% macro media_section(title, items, route_name, placeholder) -%}
-{% if items %}
-<h2>{{ title }}</h2><div class="video-grid">
-{% for item in items %}
-<a class="video-card filter-item" data-filter-name="{{ item.name|lower }}" href="{{ url_for(route_name, root_index=root_index, relpath=item.rel) }}">
-<div class="thumb-wrap"><div class="thumb-placeholder">{{ placeholder }}</div>
-<img class="lazy-thumb {% if not item.thumb_ready %}pending{% endif %}"
- data-src="{{ url_for('thumbnail', root_index=root_index, relpath=item.rel) }}"
- data-ready="{{ url_for('image_ready', kind='thumbs', root_index=root_index, relpath=item.rel) }}?generation={{ generation }}"
- {% if item.thumb_ready %}src="{{ url_for('thumbnail', root_index=root_index, relpath=item.rel) }}"{% endif %} alt="">
-</div><div class="video-name">{{ item.name }}</div></a>
-{% endfor %}
-</div>
-{% endif %}
-{%- endmacro %}
-
-{{ media_section("Videos", videos, "video_detail", "VIDEO") }}
-{{ media_section("Images", images, "image_viewer", "IMAGE") }}
-{{ media_section("PDFs", pdfs, "document_viewer", "PDF") }}
-{{ media_section("Comics", comics, "document_viewer", "COMIC") }}
-
-{% if texts %}
-<h2>Text</h2><div class="video-grid">
-{% for item in texts %}
-<a class="video-card filter-item" data-filter-name="{{ item.name|lower }}" href="{{ url_for('text_viewer', root_index=root_index, relpath=item.rel) }}">
-<div class="thumb-wrap text-thumb"><div class="text-file-icon">TEXT</div></div>
-<div class="video-name">{{ item.name }}</div></a>
-{% endfor %}
-</div>
-{% endif %}
-
-{% if not folders and not videos and not images and not pdfs and not comics and not texts %}
-<div class="empty">No supported media or subfolders in this folder.</div>
-{% endif %}
-<div id="filterEmpty" class="empty filter-empty hidden">No folders or supported files match that filter.</div>
+<p id="explorerStatus" role="status" aria-live="polite">Loading cached directory…</p><p id="coverage" class="muted"></p>
+<div class="details-heading" aria-hidden="true"><span>Name</span><span>Size</span><span>Modified</span><span>Type</span></div>
+<div id="explorerItems" class="explorer-items" aria-label="Media items"></div>
+<div class="pagination"><button id="previousPage" type="button" disabled>← Previous</button><span id="pageLabel"></span><button id="nextPage" type="button" disabled>Next →</button></div>
+{% if mode == 'browse' %}<details class="index-controls"><summary>Background indexing</summary><p>Search includes visited folders. Index this subtree to discover nested filenames. This reads names and metadata without generating thumbnails. The total folder count is unknown until discovery finishes.</p><button id="startIndex" type="button">Index this subtree</button><button id="pauseIndex" type="button">Pause indexing</button><p id="indexStatus" role="status"></p></details>{% endif %}
+{% if mode == 'favorites' %}<p class="muted">Favorites keep their original location. Removed or offline items remain here; opening one checks access and availability again.</p>{% endif %}
+<noscript><p class="empty">Enable JavaScript to load paginated listings.</p></noscript>
+</section>
 {% endblock %}
-{% block scripts %}
-<script>
-const observer = new IntersectionObserver((entries) => {
-  entries.forEach((entry) => {
-    if (!entry.isIntersecting) return;
-    const img = entry.target;
-    observer.unobserve(img);
-    if (!img.classList.contains("pending")) return;
-    let tries = 0;
-    const check = async () => {
-      tries++;
-      try {
-        const r = await fetch(img.dataset.ready, {cache:"no-store"});
-        const j = await r.json();
-        if (!j.current) return;
-        if (j.failed) {
-          img.classList.remove("pending");
-          img.classList.add("failed");
-          return;
-        }
-        if (j.ready) {
-          img.src = img.dataset.src + "?t=" + Date.now();
-          img.classList.remove("pending");
-          return;
-        }
-      } catch (_) {}
-      if (tries < 90 && document.contains(img)) setTimeout(check, 1500);
-    };
-    check();
-  });
-}, {rootMargin:"700px 0px"});
-document.querySelectorAll(".lazy-thumb.pending").forEach((img) => observer.observe(img));
-
-const filterInput = document.getElementById("folderFilter");
-const filterItems = Array.from(document.querySelectorAll(".filter-item"));
-const filterEmpty = document.getElementById("filterEmpty");
-if (filterInput) {
-  const clearAndFilter = () => {
-    filterInput.value = "";
-    filterItems.forEach((item) => item.classList.remove("filtered-out"));
-    if (filterEmpty) filterEmpty.classList.add("hidden");
-  };
-  clearAndFilter();
-  window.addEventListener("pageshow", clearAndFilter);
-  filterInput.addEventListener("input", () => {
-    const query = filterInput.value.trim().toLowerCase();
-    let visible = 0;
-    filterItems.forEach((item) => {
-      const name = item.dataset.filterName || "";
-      const match = !query || name.includes(query);
-      item.classList.toggle("filtered-out", !match);
-      if (match) visible++;
-    });
-    if (filterEmpty) filterEmpty.classList.toggle("hidden", visible !== 0 || !query);
-  });
-}
-</script>
-{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='explorer.js') }}" defer></script>{% endblock %}

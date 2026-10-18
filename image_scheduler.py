@@ -45,6 +45,7 @@ class ImageScheduler:
         if fingerprint is None:
             return False
         try:
+            # shortcut: legacy images use timestamps after restart, persist fingerprints if replacements preserve timestamps.
             fresh = output.is_file() and output.stat().st_mtime_ns >= fingerprint[1]
         except OSError:
             return False
