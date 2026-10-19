@@ -77,6 +77,7 @@ def load_settings() -> dict[str, str]:
         "transcoder": "auto",
         "directory_cache_ttl": "300",
         "directory_scan_timeout": "30",
+        "automatic_indexing": "true",
         "thumbnail_workers": "2",
         "low_bandwidth_resolution": "854x480",
         "low_bandwidth_bitrate": "2M",
@@ -465,7 +466,7 @@ directory_index = DirectoryIndex(
     CACHE_DIR / 'index.sqlite3', kind_for_suffix,
     ttl=max(1, float(SETTINGS['directory_cache_ttl'])),
     scan_timeout=max(1, float(SETTINGS['directory_scan_timeout'])),
-    profiles=load_profiles,
+    profiles=load_profiles if bool_setting(SETTINGS['automatic_indexing']) else None,
 )
 
 
@@ -984,7 +985,8 @@ def explorer_template_context():
     if request.endpoint in {'video_detail', 'player'}:
         profile, root, relative, _ = explorer_context(request.view_args['root_index'], request.view_args['relpath'])
         favorite_current = directory_index.favorite_flags(profile['id'], [{'root_id': root_id(root), 'rel': relative}])[0]
-    return {'csrf_token': session['csrf_token'], 'favorite_current': favorite_current}
+    return {'csrf_token': session['csrf_token'], 'favorite_current': favorite_current,
+            'automatic_indexing': directory_index.profiles is not None}
 
 
 @app.after_request
@@ -1178,9 +1180,7 @@ def indexing_api(root_index):
             abort(400)
         action = data.get('action')
         if action in {'start', 'resume'}:
-            if directory_index.profiles is not None:
-                relative = ''
-            directory_index.crawl_start(profile['id'], root, relative, excluded=excluded)
+            directory_index.crawl_start(profile['id'], root, excluded=excluded)
         elif action == 'pause':
             directory_index.crawl_pause(profile['id'], root, True)
         else:

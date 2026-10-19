@@ -29,6 +29,7 @@ port=8061
 transcoder=auto
 directory_cache_ttl=300
 directory_scan_timeout=30
+automatic_indexing=true
 thumbnail_workers=2
 low_bandwidth_resolution=1280x720
 low_bandwidth_bitrate=3M
@@ -74,7 +75,8 @@ Current subtree or Current folder. Search from here carries the current folder.
 Search is partial until discovery finishes. Counts show cached coverage, never
 an invented percentage; offline results can be stale.
 
-All configured libraries and their subfolders are indexed automatically at
+With **automatic_indexing=true** (the default), all configured libraries and
+their subfolders are indexed automatically at
 server startup, including libraries for profiles that have not signed in.
 Background refresh passes discover added, renamed and removed files/folders
 without a browser being open. The interval uses **directory_cache_ttl** (300
@@ -82,12 +84,20 @@ seconds/five minutes by default); a large or slow library can take longer to
 finish a pass. Root/profile configuration changes are picked up on the next
 background check. Exclusions and filesystem containment checks still apply.
 
+Set **automatic_indexing=false** in config.txt and restart to disable automatic
+discovery and periodic library refresh. Browsing still scans folders on demand,
+and manual indexing remains available. Existing snapshots and favorites are kept.
+Recursive indexing uses lower queue priority than browsing and folder refreshes;
+opening a queued folder promotes its scan. A full background queue yields space
+to an interactive scan. Already-running scans finish normally; this setting does
+not change the operating system's process priority.
+
 Expand **Background indexing** in any folder to see the current library's
 progress. **Pause library indexing** stops new traversal work for your profile;
 an in-flight scan may finish. **Resume / refresh library index** resumes pending
 work, or refreshes the entire library after a pass has finished. These controls
 apply to the library root even when opened inside a subfolder. Automatic
-indexing resumes after a server restart, including previously paused tasks.
+indexing resumes after a server restart when enabled, including previously paused tasks.
 Browsing remains available while discovery runs. Offline failures retain the
 last good snapshots and are retried on a later pass. No mass thumbnail
 generation starts automatically.

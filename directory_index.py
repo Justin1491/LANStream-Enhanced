@@ -108,14 +108,24 @@ class DirectoryIndex:
             return absolute.lstrip('\\').split('\\', 1)[0].casefold()
         return 'local'
 
-    def _schedule(self, root, relative):
+    def _schedule(self, root, relative, *, background=False):
         key = (root_id(root), relative)
-        if self._closed or key in self._jobs:
+        if self._closed:
+            return
+        if key in self._jobs:
+            if not background:
+                self._jobs[key]['background'] = False
             return
         if len(self._pending) >= self.max_pending:
-            self._counts['rejected'] += 1
-            return
-        job = dict(key=key, root=Path(root), relative=relative, host=self._host(root), expired=False, finished=False)
+            displaced = next((job for job in reversed(self._pending) if job['background']), None) if not background else None
+            if displaced is None:
+                self._counts['rejected'] += 1
+                return
+            self._pending.remove(displaced)
+            self._jobs.pop(displaced['key'])
+            with self._db:
+                self._db.execute("UPDATE crawl_frontier SET state='pending' WHERE root=? AND directory=? AND state='scanning'", displaced['key'])
+        job = dict(key=key, root=Path(root), relative=relative, host=self._host(root), expired=False, finished=False, background=background)
         self._jobs[key] = job
         self._pending.append(job)
         self._condition.notify_all()
@@ -127,7 +137,7 @@ class DirectoryIndex:
                 while job is None:
                     if self._closed:
                         return
-                    for candidate in self._pending:
+                    for candidate in sorted(self._pending, key=lambda item: item['background']):
                         if candidate['host'] not in self._hosts:
                             job = candidate
                             self._pending.remove(job)
@@ -475,7 +485,7 @@ class DirectoryIndex:
                 folder = self._db.execute('SELECT updated FROM folders WHERE root=? AND directory=?', key).fetchone()
                 if row['state'] == 'pending' and (not folder or time.time() - folder['updated'] >= self.ttl):
                     self._errors.pop(key, None)
-                    self._schedule(Path(row['path']), row['directory'])
+                    self._schedule(Path(row['path']), row['directory'], background=True)
                     if key in self._jobs:
                         with self._db:
                             self._db.execute("UPDATE crawl_frontier SET state='scanning' WHERE profile=? AND root=? AND directory=?", identity)

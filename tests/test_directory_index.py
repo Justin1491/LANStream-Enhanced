@@ -252,6 +252,43 @@ class DirectoryIndexTests(unittest.TestCase):
             self.assertTrue(self.index.wait_for_idle())
         self.assertEqual(self.index.metrics()['scans_completed'], 3)
 
+    def test_browsing_runs_before_queued_background_scans(self):
+        for name in ('background', 'visible'):
+            (self.root / name).mkdir()
+        with patch('directory_index.os.scandir', wraps=os.scandir) as scans:
+            with self.index._condition:
+                self.index._schedule(self.root, 'background', background=True)
+                self.index.listing(self.root, 'visible')
+            self.assertTrue(self.index.wait_for_idle())
+        self.assertEqual([call.args[0].name for call in scans.call_args_list], ['visible', 'background'])
+
+    def test_browsing_promotes_an_existing_background_scan(self):
+        for name in ('background', 'visible'):
+            (self.root / name).mkdir()
+        with patch('directory_index.os.scandir', wraps=os.scandir) as scans:
+            with self.index._condition:
+                self.index._schedule(self.root, 'background', background=True)
+                self.index._schedule(self.root, 'visible', background=True)
+                self.index.listing(self.root, 'visible')
+                self.assertEqual(len(self.index._jobs), 2)
+            self.assertTrue(self.index.wait_for_idle())
+        self.assertEqual([call.args[0].name for call in scans.call_args_list], ['visible', 'background'])
+
+    def test_browsing_displaces_background_work_when_queue_is_full(self):
+        self.index.max_pending = 1
+        for name in ('background', 'visible'):
+            (self.root / name).mkdir()
+        with patch('directory_index.os.scandir', wraps=os.scandir) as scans:
+            with self.index._condition:
+                self.index.crawl_start('p', self.root, 'background')
+                self.index._schedule(self.root, 'background', background=True)
+                with self.index._db:
+                    self.index._db.execute("UPDATE crawl_frontier SET state='scanning'")
+                self.index.listing(self.root, 'visible')
+            self.assertEqual(self.wait_crawl()['errors'], 0)
+            self.assertTrue(self.index.wait_for_idle())
+        self.assertEqual([call.args[0].name for call in scans.call_args_list], ['visible', 'background'])
+
     def test_bounded_pending_queue(self):
         self.index.max_pending = 1
         gate, started = threading.Event(), threading.Event()

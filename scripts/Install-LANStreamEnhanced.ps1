@@ -109,7 +109,7 @@ function Read-LanStreamConfigTemplate {
     $settings = @{}
     $roots = @()
     $profile = $false
-    $known = @('port', 'use_master_password', 'master_password', 'transcoder', 'directory_cache_ttl', 'directory_scan_timeout', 'thumbnail_workers', 'low_bandwidth_resolution', 'low_bandwidth_bitrate')
+    $known = @('port', 'use_master_password', 'master_password', 'transcoder', 'directory_cache_ttl', 'directory_scan_timeout', 'automatic_indexing', 'thumbnail_workers', 'low_bandwidth_resolution', 'low_bandwidth_bitrate')
     foreach ($raw in ($text -split '\r\n|\n|\r')) {
         $line = $raw.Trim()
         if (-not $line -or $line.StartsWith('#')) { continue }
@@ -126,6 +126,7 @@ function Read-LanStreamConfigTemplate {
             $key = $key.Trim().ToLowerInvariant()
             $value = $value.Trim()
             if ($known -notcontains $key -or $settings.ContainsKey($key)) { throw 'Config template has an unsupported or duplicate setting.' }
+            if ($key -eq 'automatic_indexing' -and $value -notin @('true', 'false', '1', '0', 'yes', 'no', 'on', 'off')) { throw 'A template automatic indexing setting must be a boolean.' }
             if ($key -in @('directory_cache_ttl', 'directory_scan_timeout', 'thumbnail_workers')) {
                 $number = 0
                 $maximum = @{ directory_cache_ttl = 86400; directory_scan_timeout = 300; thumbnail_workers = 8 }[$key]
@@ -439,7 +440,7 @@ function Invoke-LanStreamInstaller {
         $logs = Join-Path $InstallDirectory 'acceptance-logs'
         [IO.Directory]::CreateDirectory($logs) | Out-Null
         [IO.Directory]::CreateDirectory((Join-Path $InstallDirectory 'cache')) | Out-Null
-        $config = "# Isolated Enhanced acceptance profile. Private: contains password and media paths.`r`nport=8061`r`nuse_master_password=false`r`nmaster_password=`r`ntranscoder=auto`r`ndirectory_cache_ttl=300`r`ndirectory_scan_timeout=30`r`nthumbnail_workers=2`r`nlow_bandwidth_resolution=854x480`r`nlow_bandwidth_bitrate=2M`r`n`r`n<" + $plain + ">`r`n" + ($MediaRoot -join "`r`n") + "`r`n"
+        $config = "# Isolated Enhanced acceptance profile. Private: contains password and media paths.`r`nport=8061`r`nuse_master_password=false`r`nmaster_password=`r`ntranscoder=auto`r`ndirectory_cache_ttl=300`r`ndirectory_scan_timeout=30`r`nautomatic_indexing=true`r`nthumbnail_workers=2`r`nlow_bandwidth_resolution=854x480`r`nlow_bandwidth_bitrate=2M`r`n`r`n<" + $plain + ">`r`n" + ($MediaRoot -join "`r`n") + "`r`n"
         if ($template) { $config = $template.Text.Replace('__LANSTREAM_SETUP_PASSWORD__', $plain) }
         [IO.File]::WriteAllText((Join-Path $InstallDirectory 'config.txt'), $config, (New-Object Text.UTF8Encoding $false))
         $config = $null

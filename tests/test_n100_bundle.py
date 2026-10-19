@@ -47,6 +47,7 @@ class N100Bundle(unittest.TestCase):
             self.assertEqual(archive.read(prefix + self.application.name), self.application.read_bytes())
             config = archive.read(prefix + 'config.txt').decode('utf-8')
             self.assertIn('port=8061\r\n', config)
+            self.assertIn('automatic_indexing=true\r\n', config)
             self.assertIn('<__LANSTREAM_SETUP_PASSWORD__>', config)
             for root in self.roots:
                 self.assertIn(root, config)

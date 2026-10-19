@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const script = fs.readFileSync(path.join(__dirname, '../static/explorer.js'), 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function explorer() {
+function explorer(automaticIndexing) {
   const images = [], checks = [], observers = [], timers = new Map();
   class Element extends EventTarget {
     constructor(tag) {
@@ -30,6 +30,10 @@ function explorer() {
     'explorerQuery', 'explorerSort', 'fileType', 'gridDensity', 'previousPage',
     'nextPage', 'densityControl', 'pageLabel', 'coverage'].map(id => [id, new Element('div')]));
   elements.explorer.dataset = {api:'/api/browse/0/', mode:'browse', root:'0', relative:''};
+  if (automaticIndexing !== undefined) {
+    elements.explorer.dataset.automaticIndexing = String(automaticIndexing);
+    for (const id of ['startIndex', 'pauseIndex', 'indexStatus']) elements[id] = new Element('div');
+  }
   const location = {pathname:'/browse/0/', search:''};
   const navigate = (_data, _title, url) => {
     const target = new URL(url, 'http://fixture');
@@ -57,6 +61,7 @@ function explorer() {
       disconnect() {}
     },
     fetch: async (url, options) => {
+      if (url.startsWith('/api/index/')) return {ok:true, json:async () => ({crawls:[]})};
       if (url.startsWith('/ready/')) {
         return new Promise((resolve, reject) => {
           checks.push({signal:options.signal, respond:ready => resolve({ok:true, json:async () => ({ready})})});
@@ -73,6 +78,13 @@ function explorer() {
     intersect() { const observer = observers.at(-1); observer.callback(observer.targets.map(target => ({target, isIntersecting:true}))); },
   };
 }
+
+test('empty indexing status reflects whether automatic indexing is enabled', async () => {
+  const disabled = explorer(false), enabled = explorer(true);
+  await flush();
+  assert.equal(disabled.elements.indexStatus.textContent, 'Automatic indexing is disabled. Use Resume / refresh library index to start.');
+  assert.equal(enabled.elements.indexStatus.textContent, 'Automatic library indexing is starting.');
+});
 
 test('visible thumbnails leave connections available for page navigation', async () => {
   const e = explorer();

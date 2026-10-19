@@ -6,6 +6,9 @@ master_password=
 transcoder=auto
 directory_cache_ttl=300
 directory_scan_timeout=30
+# Index all configured roots and subfolders behind browsing/refresh requests.
+# Set false for on-demand browsing and manual indexing only; restart to apply.
+automatic_indexing=true
 thumbnail_workers=2
 low_bandwidth_resolution=854x480
 low_bandwidth_bitrate=2M

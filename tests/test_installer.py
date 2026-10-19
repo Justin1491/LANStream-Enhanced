@@ -193,7 +193,7 @@ class InstallerSafety(unittest.TestCase):
 
     def template(self):
         return ('# Fictional settings\r\nport=8061\r\nuse_master_password=false\r\n'
-                'master_password=\r\ntranscoder=auto\r\nthumbnail_workers=1\r\n'
+                'master_password=\r\ntranscoder=auto\r\nautomatic_indexing=false\r\nthumbnail_workers=1\r\n'
                 'low_bandwidth_resolution=1280x720\r\nlow_bandwidth_bitrate=3M\r\n'
                 '<__LANSTREAM_SETUP_PASSWORD__>\r\n' + str(self.media) + '\r\n-/Private\r\n')
 
@@ -214,7 +214,8 @@ class InstallerSafety(unittest.TestCase):
                      self.template().replace('port=8061', 'port=8061\r\nport=8061'),
                      self.template().replace('<__LANSTREAM_SETUP_PASSWORD__>', str(self.media) + '\r\n<__LANSTREAM_SETUP_PASSWORD__>'),
                      self.template() + 'port=8060\r\n',
-                     self.template().replace('transcoder=auto', 'transcoder=software')):
+                     self.template().replace('transcoder=auto', 'transcoder=software'),
+                     self.template().replace('automatic_indexing=false', 'automatic_indexing=maybe')):
             with self.subTest(text=text[:70]):
                 path = self.work / 'invalid-config.txt'
                 path.write_bytes(text.encode('utf-8'))

@@ -144,9 +144,50 @@ class AutomaticIndexingTests(unittest.TestCase):
                 gate.set()
                 index.wait_for_idle()
 
-    def test_server_starts_profile_indexing_without_login_or_browse(self):
+    def run_server(self, code, settings=''):
         config = self.work / 'config.txt'
-        config.write_text(f'port=8061\n<fictional>\n{self.root}\n-/private\n', encoding='utf-8')
+        config.write_text(f'port=8061\n{settings}<fictional>\n{self.root}\n-/private\n', encoding='utf-8')
+        result = subprocess.run([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[1],
+                                env={**os.environ, 'LANSTREAM_CONFIG_FILE': str(config),
+                                     'LANSTREAM_CACHE_DIR': str(self.work / 'server-cache')},
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_disabling_automatic_indexing_keeps_browsing_and_manual_indexing(self):
+        self.run_server('''
+import time
+import app
+try:
+    assert app.SETTINGS['automatic_indexing'] == 'false'
+    root = app.load_profiles()[0]['roots'][0]
+    time.sleep(.3)
+    assert app.directory_index.metrics()['scans_started'] == 0
+    assert app.directory_index.crawl_status(app.load_profiles()[0]['id'], [root]) == []
+    client = app.app.test_client()
+    client.post('/login', data={'password': 'fictional'})
+    page = client.get('/browse/0/').get_data(as_text=True)
+    assert 'data-automatic-indexing="false"' in page
+    assert 'Automatic indexing is disabled.' in page
+    client.get('/api/browse/0/')
+    assert app.directory_index.wait_for_idle()
+    assert client.get('/api/browse/0/').get_json()['state'] == 'ready'
+    client.get('/')
+    with client.session_transaction() as session:
+        headers = {'X-LANStream-CSRF': session['csrf_token']}
+    response = client.post('/api/index/0?relative=nested', json={'action': 'start'}, headers=headers)
+    assert response.status_code == 200
+    assert response.get_json()['crawls'][0]['relative'] == '', 'manual library indexing was narrowed to a subfolder'
+    deadline = time.monotonic() + 8
+    while app.directory_index.search([root], query='original')['total'] != 1:
+        assert time.monotonic() < deadline, 'manual indexing did not reach nested media'
+        time.sleep(.025)
+    assert app.directory_index.search([root], query='secret')['total'] == 0
+finally:
+    app.directory_index.close()
+    app.image_scheduler.close()
+''', settings='automatic_indexing=false\n')
+
+    def test_server_starts_profile_indexing_without_login_or_browse(self):
         code = '''
 import time
 import app
@@ -162,6 +203,8 @@ try:
     assert app.directory_index.search([root], query='secret')['total'] == 0
     client = app.app.test_client()
     client.post('/login', data={'password': 'fictional'})
+    page = client.get('/browse/0/').get_data(as_text=True)
+    assert 'data-automatic-indexing="true"' in page
     client.get('/')
     with client.session_transaction() as session:
         headers = {'X-LANStream-CSRF': session['csrf_token']}
@@ -172,11 +215,7 @@ finally:
     app.directory_index.close()
     app.image_scheduler.close()
 '''
-        result = subprocess.run([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[1],
-                                env={**os.environ, 'LANSTREAM_CONFIG_FILE': str(config),
-                                     'LANSTREAM_CACHE_DIR': str(self.work / 'server-cache')},
-                                capture_output=True, text=True, timeout=15)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.run_server(code)
 
 
 if __name__ == '__main__':

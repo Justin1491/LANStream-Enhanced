@@ -4,7 +4,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='explorer.css') }}">
 <a class="back-link" href="{{ up_url }}">← {{ 'Up one level' if mode == 'browse' else 'Media roots' }}</a>
 <nav class="crumbs" aria-label="Folder path">{% for crumb in crumbs %}<a href="{{ crumb.url }}">{{ crumb.name }}</a>{% if not loop.last %}<span>/</span>{% endif %}{% endfor %}</nav>
-<section id="explorer" data-api="{{ api_url }}" data-mode="{{ mode }}" data-root="{{ root_index if root_index is not none else '' }}" data-relative="{{ relpath }}">
+<section id="explorer" data-api="{{ api_url }}" data-mode="{{ mode }}" data-root="{{ root_index if root_index is not none else '' }}" data-relative="{{ relpath }}" data-automatic-indexing="{{ 'true' if automatic_indexing else 'false' }}">
 <div class="explorer-heading"><h1>{{ 'Favorites' if mode == 'favorites' else 'Search filenames' if mode == 'search' else crumbs[-1].name }}</h1>{% if mode == 'browse' %}<a href="/search?root={{ root_index }}&amp;relative={{ relpath|urlencode }}">Search from here</a>{% endif %}</div>
 <div class="explorer-toolbar">
 {% if mode != 'favorites' %}<label class="explorer-query">{{ 'Filename contains' if mode == 'search' else 'Filter entire folder' }}<input id="explorerQuery" type="search" autocomplete="off" maxlength="500" placeholder="Any part of a filename"></label>{% endif %}
@@ -19,7 +19,7 @@
 <div class="details-heading" aria-hidden="true"><span>Name</span><span>Size</span><span>Modified</span><span>Type</span></div>
 <div id="explorerItems" class="explorer-items" aria-label="Media items"></div>
 <div class="pagination"><button id="previousPage" type="button" disabled>← Previous</button><span id="pageLabel"></span><button id="nextPage" type="button" disabled>Next →</button></div>
-{% if mode == 'browse' %}<details class="index-controls"><summary>Background indexing</summary><p>All libraries and their subfolders are indexed automatically in the background. Periodic scans discover added and removed files (every five minutes by default). This reads names and metadata without generating thumbnails. These controls apply to this entire library.</p><button id="startIndex" type="button">Resume / refresh library index</button><button id="pauseIndex" type="button">Pause library indexing</button><p id="indexStatus" role="status" aria-live="polite"></p></details>{% endif %}
+{% if mode == 'browse' %}<details class="index-controls"><summary>Background indexing</summary><p>{% if automatic_indexing %}All libraries and their subfolders are indexed automatically in the background. Periodic scans discover added and removed files (every five minutes by default).{% else %}Automatic indexing is disabled. Browse folders on demand or use Resume / refresh library index to index this library and all its subfolders.{% endif %} Background indexing gives priority to browsing and folder refreshes. This reads names and metadata without generating thumbnails. These controls apply to this entire library.</p><button id="startIndex" type="button">Resume / refresh library index</button><button id="pauseIndex" type="button">Pause library indexing</button><p id="indexStatus" role="status" aria-live="polite"></p></details>{% endif %}
 {% if mode == 'favorites' %}<p class="muted">Favorites keep their original location. Removed or offline items remain here; opening one checks access and availability again.</p>{% endif %}
 <noscript><p class="empty">Enable JavaScript to load paginated listings.</p></noscript>
 </section>

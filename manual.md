@@ -485,6 +485,22 @@ software
 
 When `auto` is selected, LANStream tests available encoders and chooses the first working option according to the platform-specific preference order.
 
+### automatic_indexing
+
+```text
+automatic_indexing=true
+```
+
+Enabled by default. Indexes all configured libraries and their subfolders in the
+background, with periodic refreshes using `directory_cache_ttl` (300 seconds by
+default). Browsing and folder refreshes take priority over queued background
+scans; scans already running finish normally. Profile exclusions still apply.
+
+Set to `false` and restart for on-demand browsing and manual library indexing
+only. Existing indexed snapshots and favorites are kept. See the
+[Enhanced operations guide](docs/enhanced-guide.md#browse-search-and-favorites)
+for progress and pause/resume controls.
+
 ### low_bandwidth_resolution
 
 Default:

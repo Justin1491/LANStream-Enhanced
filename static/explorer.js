@@ -154,7 +154,7 @@
     const url = '/api/index/' + explorer.dataset.root + '?relative=' + encodeURIComponent(explorer.dataset.relative);
     try { const response = action ? await write(url, {action}) : await (await fetch(url)).json(); const crawl = response.crawls[0];
       if (stopped) return;
-      document.getElementById('indexStatus').textContent = crawl ? (crawl.paused ? 'Paused' : crawl.running ? 'Indexing library' : crawl.automatic ? 'Watching for changes' : 'Complete') + ': ' + crawl.completed + ' folders read, ' + crawl.pending + ' queued, ' + crawl.errors + ' errors.' : 'Automatic library indexing is starting.';
+      document.getElementById('indexStatus').textContent = crawl ? (crawl.paused ? 'Paused' : crawl.running ? 'Indexing library' : crawl.automatic ? 'Watching for changes' : 'Complete') + ': ' + crawl.completed + ' folders read, ' + crawl.pending + ' queued, ' + crawl.errors + ' errors.' : explorer.dataset.automaticIndexing === 'true' ? 'Automatic library indexing is starting.' : 'Automatic indexing is disabled. Use Resume / refresh library index to start.';
     } catch (_) { if (!stopped) document.getElementById('indexStatus').textContent = 'Indexing status unavailable. Retrying…'; }
     if (!stopped) indexPoll = setTimeout(() => indexStatus(), 2000);
   }
