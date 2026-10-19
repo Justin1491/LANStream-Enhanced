@@ -54,11 +54,22 @@ numbers of requests and must not be interpreted as equivalent workloads.
 
 ## Verification
 
-- Full Python suite: **41 tests passed**, including Windows junctions and
+- Full Python suite: **55 tests passed, no skips**, including Windows junctions and
   symlinks, 0/1/100/25,969/100,000 entry cases, concurrent scans, stale/offline
   snapshots, interrupted publication, Unicode/natural ordering, exclusions,
   traversal, profile isolation, persistent favorites/crawls, corruption/schema
   refusal and thumbnail replacement/priority/backoff cases.
+- Added **14 non-video viewer regressions** and exercised the source server and
+  rebuilt portable executable in Chrome at 1440x1000 and 390x844. PNG/JPEG/TIFF,
+  PDF, CBZ, genuine CBR through 7-Zip, UTF-8 text and Markdown passed navigation,
+  page ordering/aspect/bounds, fullscreen, keyboard/swipe, folder return and
+  literal HTML escaping. Corrupt-file cases returned deliberate 415 responses
+  with readable viewer messages; there were no unexpected console/HTTP errors.
+  Independent 844x390 and 1024x600 geometry checks also passed. Regressions fixed
+  stale converted/page caches, simultaneous renderer publication, damaged
+  document errors, leaked paths in text read errors, portrait clipping, mobile
+  counters and missing document fullscreen exit controls. Missing 7-Zip has
+  explicit installation guidance. See [viewer evidence](viewers-local.json).
 - Chrome desktop 1440x1000 and mobile viewport 390x844: bounded 100 items,
   **1,164 DOM elements**, actual 64px List thumbnail, all views/density,
   pagination, full-folder filter, browser Back/Forward, search, Favorites, preference persistence,
@@ -87,8 +98,8 @@ RAM/CPU/network/transcoding FPS, **actual Intel QSV** encode and representative
 HEVC/MKV seeking/audio/subtitle/Low Bandwidth playback, plus physical iPhone
 Safari and UniFi Teleport cellular checks. Chrome mobile emulation does not
 prove Safari compatibility. Docker source copying is updated; a Docker build
-was not run. Non-video viewers retain their upstream routes but were not
-individually exercised in the browser suite.
+was not run. Non-video viewers passed locally using fictional fixtures; real
+large/encrypted/unusual documents and physical Safari remain target checks.
 
 Optional bulk thumbnail pre-generation is omitted. New/changed sources with
 deliberately preserved timestamps can require manual removal of legacy cache

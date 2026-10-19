@@ -103,6 +103,24 @@ filesystem containment and profile access. Do not use symlink aliases to work
 around profile exclusions. The private-network upstream authentication model
 is retained; this is not an internet-facing identity service.
 
+## Images, documents and text
+
+Images support next/previous links, arrow keys and swipes. Fullscreen image
+navigation stays inside fullscreen. PDF, CBZ and CBR viewers support page
+buttons, arrow/Page Up/Page Down keys and swipes, with an exit button inside
+fullscreen. Comic pages use natural filename order (1, 2, 10). CBR requires the
+bundled 7-Zip backend. Text and Markdown display as escaped plain text.
+
+TIFF conversions and rendered document pages use source modification time and
+size in their cache keys, so ordinary file replacements refresh the view and
+removed pages are rejected. Replacements that preserve both values require
+manual removal of that file's rendered cache. Rendering is serialized to avoid
+duplicate publication and concurrent PyMuPDF access. Damaged images/pages show
+a readable error; document errors do not expose backend paths. Old render
+versions can remain under cache/image-view and cache/document-pages. If space
+is needed, stop Enhanced before removing those regenerable subdirectories;
+preserve cache/index.sqlite3 and its companions containing Favorites.
+
 ## Backup, schema and index recovery
 
 The database is **cache/index.sqlite3**, schema version 1, using SQLite WAL.
@@ -148,6 +166,26 @@ Run it only against a **synthetic fixture server**: it changes a test favorite.
 Pass URL and output directory. Set LANSTREAM_PLAYWRIGHT to an installed module
 path and LANSTREAM_BROWSER to Chrome/Edge if needed. It measures browser first
 render/DOM count and exercises views, paging, filter, search and favorites.
+
+For non-video viewer checks, start a separate fictional fixture server:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\viewer_smoke_server.py --work-parent benchmark-results\viewers
+```
+
+In another terminal, with the installed Playwright/browser paths configured as
+above, run:
+
+```powershell
+node scripts\viewer_browser_check.cjs benchmark-results\viewers\viewer-manifest.json benchmark-results\viewer-browser
+```
+
+This server binds only loopback port 8061 and uses isolated generated files,
+profiles and cache. Stop it with Ctrl+C afterward. To check a built portable
+release, append `--executable dist\LANStream\LANStream.exe` to the server command.
+The browser script asserts rendered page colors/order, navigation, fullscreen,
+viewport bounds, UTF-8/HTML escaping and deliberate corrupt-file error states;
+it saves screenshots and result.json. It does not test physical Safari.
 
 ## Windows packaging
 

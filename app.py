@@ -46,6 +46,8 @@ CONFIG_FILE = Path(os.environ.get("LANSTREAM_CONFIG_FILE", str(APP_DIR / "config
 CACHE_DIR = Path(os.environ.get("LANSTREAM_CACHE_DIR", str(APP_DIR / "cache")))
 SESSION_SECRET = os.environ.get("LANSTREAM_SESSION_SECRET") or secrets.token_hex(32)
 VAAPI_DEVICE = os.environ.get("LANSTREAM_VAAPI_DEVICE", "/dev/dri/renderD128")
+# Serialize cache publication and PyMuPDF work across viewer/thumbnail threads.
+VIEWER_RENDER_LOCK = threading.Lock()
 
 
 def find_media_tool(name: str) -> str:
@@ -514,6 +516,12 @@ def cache_path(kind: str, root_index: int, root: Path, source: Path) -> Path:
     return cache_root_dir(kind, root) / rel.parent / f"{rel.name}.jpg"
 
 
+def _viewer_cache_path(kind: str, root_index: int, root: Path, source: Path) -> Path:
+    base = cache_path(kind, root_index, root, source)
+    stat = source.stat()
+    return base.with_name(f"{base.stem}.{stat.st_mtime_ns}-{stat.st_size}.jpg")
+
+
 def probe(path: Path) -> dict[str, Any]:
     cmd = [
         FFPROBE, "-v", "error",
@@ -713,7 +721,7 @@ def _generate_nonvideo_thumbnail(source: Path, output: Path, width: int) -> bool
             _save_pillow_jpeg(image, output, width)
         return True
     if kind == "pdf":
-        with fitz.open(source) as document:
+        with VIEWER_RENDER_LOCK, fitz.open(source) as document:
             if document.page_count < 1:
                 return False
             page = document.load_page(0)
@@ -1266,17 +1274,18 @@ def image_file(root_index, relpath):
     # Most configured image formats can be sent directly to modern browsers.
     # TIFF is converted lazily because browser support is inconsistent.
     if source.suffix.lower() in {".tif", ".tiff"}:
-        output = cache_path("image-view", root_index, root, source)
-        if not output.exists():
-            output.parent.mkdir(parents=True, exist_ok=True)
-            tmp = output.with_suffix(".tmp.jpg")
-            try:
-                with Image.open(source) as image:
-                    _save_pillow_jpeg(image, tmp, 2400)
-                tmp.replace(output)
-            except Exception:
-                tmp.unlink(missing_ok=True)
-                abort(415)
+        output = _viewer_cache_path("image-view", root_index, root, source)
+        with VIEWER_RENDER_LOCK:
+            if not output.exists():
+                output.parent.mkdir(parents=True, exist_ok=True)
+                tmp = output.with_suffix(".tmp.jpg")
+                try:
+                    with Image.open(source) as image:
+                        _save_pillow_jpeg(image, tmp, 2400)
+                    tmp.replace(output)
+                except Exception:
+                    tmp.unlink(missing_ok=True)
+                    abort(415)
         return send_file(output, mimetype="image/jpeg", conditional=True, max_age=86400)
 
     mimetype = mimetypes.guess_type(str(source))[0] or "application/octet-stream"
@@ -1284,7 +1293,7 @@ def image_file(root_index, relpath):
 
 
 def _page_cache_path(kind: str, root_index: int, root: Path, source: Path, page: int) -> Path:
-    base = cache_path(kind, root_index, root, source)
+    base = _viewer_cache_path(kind, root_index, root, source)
     return base.parent / f"{base.stem}.page-{page + 1:05d}.jpg"
 
 
@@ -1324,14 +1333,19 @@ def document_viewer(root_index, relpath):
     kind = media_kind(source)
     if kind not in {"pdf", "comic"}:
         abort(404)
+    if source.suffix.lower() == ".cbr" and not SEVEN_ZIP:
+        abort(503, description="CBR viewing requires 7-Zip. Install 7-Zip or place its executable beside LANStream.")
     try:
         if kind == "pdf":
-            with fitz.open(source) as document:
+            with VIEWER_RENDER_LOCK, fitz.open(source) as document:
                 page_count = document.page_count
         else:
             page_count = len(_comic_names(source))
-    except Exception as exc:
-        return render_template("error.html", message=f"Unable to open document: {exc}"), 500
+    except (zipfile.BadZipFile, fitz.FileDataError, RuntimeError, ValueError):
+        return render_template("error.html", message="Unable to open this document. It may be damaged or unsupported."), 415
+    except Exception:
+        app.logger.exception("Document open failed")
+        return render_template("error.html", message="Unable to open this document. Please try again."), 500
     if page_count < 1:
         return render_template("error.html", message="This document has no viewable pages."), 415
     return render_template(
@@ -1352,6 +1366,8 @@ def document_page(root_index, relpath):
     kind = media_kind(source)
     if kind not in {"pdf", "comic"}:
         abort(404)
+    if source.suffix.lower() == ".cbr" and not SEVEN_ZIP:
+        abort(503, description="CBR viewing requires 7-Zip. Install 7-Zip or place its executable beside LANStream.")
     try:
         page = int(request.args.get("page", "0"))
     except ValueError:
@@ -1359,17 +1375,20 @@ def document_page(root_index, relpath):
     if page < 0:
         abort(404)
     output = _page_cache_path("document-pages", root_index, root, source, page)
-    if not output.exists():
-        try:
-            if kind == "pdf":
-                _render_pdf_page(source, page, output)
-            else:
-                _render_comic_page(source, page, output)
-        except (IndexError, zipfile.BadZipFile, fitz.FileDataError):
-            abort(404)
-        except Exception as exc:
-            app.logger.warning("Document page render failed for %s page %s: %s", source, page, exc)
-            abort(500)
+    with VIEWER_RENDER_LOCK:
+        if not output.exists():
+            try:
+                if kind == "pdf":
+                    _render_pdf_page(source, page, output)
+                else:
+                    _render_comic_page(source, page, output)
+            except IndexError:
+                abort(404)
+            except (zipfile.BadZipFile, fitz.FileDataError, RuntimeError, ValueError, Image.UnidentifiedImageError):
+                abort(415, description="Unable to read this page. The document may be damaged or unsupported.")
+            except Exception as exc:
+                app.logger.warning("Document page render failed for %s page %s: %s", source, page, exc)
+                abort(500)
     return send_file(output, mimetype="image/jpeg", conditional=True, max_age=86400)
 
 
@@ -1382,8 +1401,9 @@ def text_viewer(root_index, relpath):
         abort(404)
     try:
         raw = source.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return render_template("error.html", message=f"Unable to read text file: {exc}"), 500
+    except OSError:
+        app.logger.exception("Text file read failed")
+        return render_template("error.html", message="Unable to read this text file. Please try again."), 500
 
     return render_template(
         "text_viewer.html",

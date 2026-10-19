@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block title %}{{ filename }} · LANStream{% endblock %}
 {% block content %}
 <div class="viewer-page">
 <div class="viewer-toolbar">
@@ -7,8 +8,10 @@
 <button id="fullscreenButton" type="button">Fullscreen</button>
 </div>
 <div class="document-stage" id="viewerStage">
+<button id="fullscreenExit" class="viewer-fullscreen-exit" type="button">Exit Fullscreen</button>
 <button id="prevPage" class="viewer-nav viewer-prev" type="button" aria-label="Previous page">‹</button>
-<img id="pageImage" alt="">
+<img id="pageImage" alt="Page 1">
+<p id="viewerStatus" class="viewer-status" role="status">Loading page…</p>
 <button id="nextPage" class="viewer-nav viewer-next" type="button" aria-label="Next page">›</button>
 <div class="page-counter"><span id="pageNumber">1</span> / {{ page_count }}</div>
 </div>
@@ -18,11 +21,15 @@
 <script>
 const count={{ page_count }},base={{ url_for('document_page',root_index=root_index,relpath=relpath)|tojson }};
 const img=document.getElementById("pageImage"),num=document.getElementById("pageNumber"),prev=document.getElementById("prevPage"),next=document.getElementById("nextPage"),stage=document.getElementById("viewerStage"),full=document.getElementById("fullscreenButton");
+const status=document.getElementById("viewerStatus");
+img.onload=()=>{status.hidden=true;img.style.visibility="visible";};
+img.onerror=()=>{status.textContent="Unable to display this page. The document may have changed or be damaged.";status.hidden=false;img.style.visibility="hidden";};
 let page=0;
-function show(n){page=Math.max(0,Math.min(count-1,n));img.src=base+"?page="+page;num.textContent=page+1;prev.disabled=page===0;next.disabled=page===count-1;if(page+1<count){const p=new Image();p.src=base+"?page="+(page+1);}}
+function show(n){page=Math.max(0,Math.min(count-1,n));status.textContent="Loading page…";status.hidden=false;img.style.visibility="hidden";img.alt="Page "+(page+1);img.src=base+"?page="+page;num.textContent=page+1;prev.disabled=page===0;next.disabled=page===count-1;if(page+1<count){const p=new Image();p.src=base+"?page="+(page+1);}}
 prev.onclick=()=>show(page-1);next.onclick=()=>show(page+1);
-document.addEventListener("keydown",e=>{if(e.key==="ArrowLeft"||e.key==="PageUp")show(page-1);if(e.key==="ArrowRight"||e.key==="PageDown")show(page+1);});
+document.addEventListener("keydown",e=>{if(e.key==="ArrowLeft"||e.key==="PageUp"){e.preventDefault();show(page-1);}if(e.key==="ArrowRight"||e.key==="PageDown"){e.preventDefault();show(page+1);}});
 full.onclick=async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await stage.requestFullscreen();}catch(_){}};
+document.getElementById("fullscreenExit").onclick=()=>full.onclick();
 document.addEventListener("fullscreenchange",()=>full.textContent=document.fullscreenElement?"Exit Fullscreen":"Fullscreen");
 let x=null;stage.addEventListener("touchstart",e=>{x=e.changedTouches[0].clientX},{passive:true});stage.addEventListener("touchend",e=>{if(x===null)return;const d=e.changedTouches[0].clientX-x;x=null;if(Math.abs(d)<60)return;show(page+(d<0?1:-1));},{passive:true});
 show(0);

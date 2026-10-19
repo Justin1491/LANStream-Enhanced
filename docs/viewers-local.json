@@ -1,0 +1,78 @@
+{
+  "date": "2026-10-18",
+  "environment": "Development Windows; fictional media; loopback 8061",
+  "python_suite": {
+    "tests": 55,
+    "skipped": 0,
+    "passed": 55
+  },
+  "viewer_route_tests": 14,
+  "source_browser": {
+    "browser": "155.0.8059.85",
+    "fixture": "Fictional local files only",
+    "checks": [
+      "desktop: Unicode image links, next/previous, TIFF, folder return, fullscreen",
+      "desktop: pdf natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "desktop: cbz natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "desktop: cbr natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "desktop: text UTF-8 and literal HTML escaping",
+      "desktop: markdown UTF-8 and literal HTML escaping",
+      "desktop: corrupt image/page display readable errors",
+      "mobile: Unicode image links, next/previous, TIFF, folder return, swipe",
+      "mobile: pdf natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "mobile: cbz natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "mobile: cbr natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "mobile: text UTF-8 and literal HTML escaping",
+      "mobile: markdown UTF-8 and literal HTML escaping",
+      "mobile: corrupt image/page display readable errors"
+    ],
+    "expectedErrors": [
+      "desktop: HTTP 415 /image-file/0/Broken.tiff",
+      "desktop: HTTP 415 /document-page/0/Broken%20page.cbz",
+      "mobile: HTTP 415 /image-file/0/Broken.tiff",
+      "mobile: HTTP 415 /document-page/0/Broken%20page.cbz"
+    ],
+    "errors": []
+  },
+  "portable_browser": {
+    "browser": "155.0.8059.85",
+    "fixture": "Fictional local files only",
+    "checks": [
+      "desktop: Unicode image links, next/previous, TIFF, folder return, fullscreen",
+      "desktop: pdf natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "desktop: cbz natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "desktop: cbr natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "desktop: text UTF-8 and literal HTML escaping",
+      "desktop: markdown UTF-8 and literal HTML escaping",
+      "desktop: corrupt image/page display readable errors",
+      "mobile: Unicode image links, next/previous, TIFF, folder return, swipe",
+      "mobile: pdf natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "mobile: cbz natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "mobile: cbr natural page order, aspect, boundaries, next/previous, keyboard, folder return",
+      "mobile: text UTF-8 and literal HTML escaping",
+      "mobile: markdown UTF-8 and literal HTML escaping",
+      "mobile: corrupt image/page display readable errors"
+    ],
+    "expectedErrors": [
+      "desktop: HTTP 415 /image-file/0/Broken.tiff",
+      "desktop: HTTP 415 /document-page/0/Broken%20page.cbz",
+      "mobile: HTTP 415 /image-file/0/Broken.tiff",
+      "mobile: HTTP 415 /document-page/0/Broken%20page.cbz"
+    ],
+    "errors": []
+  },
+  "independent_review": {
+    "model": "gpt-6.1-sol",
+    "effort": "high",
+    "geometry_cases_passed": 10,
+    "remaining_findings": 0,
+    "additional_viewports": [
+      "844x390",
+      "1024x600"
+    ]
+  },
+  "production_modified": false,
+  "real_SMB_tested": false,
+  "N100_QSV_tested": false,
+  "physical_Safari_tested": false
+}

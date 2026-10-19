@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block title %}{{ filename }} · LANStream{% endblock %}
 {% block content %}
 <div class="viewer-page">
 <div class="viewer-toolbar">
@@ -10,6 +11,7 @@
 <button id="fullscreenExit" class="viewer-fullscreen-exit" type="button">Exit Fullscreen</button>
 {% if previous_rel %}<a class="viewer-nav viewer-prev" href="{{ url_for('image_viewer', root_index=root_index, relpath=previous_rel) }}" data-rel="{{ previous_rel }}" aria-label="Previous image">‹</a>{% endif %}
 <img id="viewerImage" src="{{ url_for('image_file', root_index=root_index, relpath=relpath) }}" alt="{{ filename }}">
+<p id="viewerStatus" class="viewer-status" role="status">Loading image…</p>
 {% if next_rel %}<a class="viewer-nav viewer-next" href="{{ url_for('image_viewer', root_index=root_index, relpath=next_rel) }}" data-rel="{{ next_rel }}" aria-label="Next image">›</a>{% endif %}
 </div>
 </div>
@@ -20,7 +22,11 @@ const stage=document.getElementById("viewerStage"),
  button=document.getElementById("fullscreenButton"),
  exitButton=document.getElementById("fullscreenExit"),
  image=document.getElementById("viewerImage"),
- title=document.getElementById("viewerTitle");
+ title=document.getElementById("viewerTitle"),
+ status=document.getElementById("viewerStatus");
+image.onload=()=>{status.hidden=true;image.style.visibility="visible";};
+image.onerror=()=>{status.textContent="Unable to display this image. It may be damaged or unsupported.";status.hidden=false;image.style.visibility="hidden";};
+if(image.complete){if(image.naturalWidth)image.onload();else image.onerror();}
 const navigationBase={{ url_for('image_navigation',root_index=root_index,relpath='__REL__')|tojson }};
 let navigating=false,wheelLock=false;
 
@@ -75,6 +81,7 @@ async function move(direction){
   const response=await fetch(navApi(link.dataset.rel),{cache:"no-store"});
   if(!response.ok)throw new Error("navigation failed");
   const data=await response.json();
+  status.textContent="Loading image…";status.hidden=false;image.style.visibility="hidden";
   image.src=data.image_url;
   image.alt=data.filename;
   title.textContent=data.filename;

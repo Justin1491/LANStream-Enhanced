@@ -43,3 +43,8 @@ compatibility and avoid any bulk startup scan or thumbnail generation.
 
 Local implementation and verification complete. JSERVER/SMB/QSV/Safari/Teleport
 acceptance remains pending per docs/status.md; no target acceptance is claimed.
+
+- [x] Follow-up local viewer acceptance: 14 viewer regressions, 55 total tests
+  passing without skips, source and rebuilt portable desktop/mobile browser
+  checks, real 7-Zip CBR extraction, cache replacement/concurrency repairs,
+  readable errors and viewport/fullscreen fixes. See docs/viewers-local.json.
