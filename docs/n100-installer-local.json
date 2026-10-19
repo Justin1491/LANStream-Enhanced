@@ -2,9 +2,9 @@
   "date": "2026-10-18",
   "platform": "Development Windows; Windows PowerShell 5.1",
   "combined_python_tests": {
-    "tests": 82,
+    "tests": 106,
     "skipped": 0,
-    "passed": 82
+    "passed": 106
   },
   "installer_guardrail_tests": 18,
   "latest_app_file_type_filters": "Desktop/mobile actual executable passed",
@@ -53,5 +53,19 @@
     "tracked_example_unchanged": true,
     "personal_mappings_in_tracked_files": false,
     "personal_mappings_in_git_history": false
+  },
+  "javascript_tests": {
+    "tests": 14,
+    "skipped": 0,
+    "passed": 14
+  },
+  "repackaged_local_release": {
+    "windows_build": "passed",
+    "isolated_portable_smoke": "passed",
+    "template_installation": "passed; QSV success simulated",
+    "python_tests": 106,
+    "javascript_tests": 14,
+    "production_deployment_performed": false,
+    "physical_client_checks_performed": false
   }
 }

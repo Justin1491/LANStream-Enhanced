@@ -37,7 +37,7 @@ LANStream is
 - **Portable**  
   The Windows build can be extracted and run as a self-contained application. The Linux version can run in Docker with configuration and cache files kept outside the container.
 - **Low-maintenance**  
-  Snapshots refresh in the background after a configurable TTL. Recursive discovery is explicit and resumable.
+  All configured libraries and their subfolders are indexed automatically in the background. Periodic scans keep search updated as files are added or removed.
 - **LAN-focused**  
   LANStream is optimized for simple local-network playback rather than trying to be an all-purpose cloud media ecosystem.
 

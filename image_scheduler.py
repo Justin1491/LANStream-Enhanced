@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 class ImageScheduler:
-    def __init__(self, generator, workers=1, max_pending=64, retry_seconds=60, streaming=None):
+    def __init__(self, generator, workers=2, max_pending=64, retry_seconds=60, streaming=None):
         self._generator = generator
         self._limit = max(1, int(max_pending))
         self._retry_seconds = max(0, retry_seconds)
@@ -20,6 +20,9 @@ class ImageScheduler:
         self._completed = 0
         self._paused = False
         self._closed = False
+        self._preparation = None
+        self._preparation_thread = None
+        self._preparation_stop = threading.Event()
         self._threads = [threading.Thread(target=self._worker, name=f'image-worker-{i}', daemon=True)
                          for i in range(max(1, min(2, int(workers))))]
         for thread in self._threads:
@@ -155,6 +158,83 @@ class ImageScheduler:
                         paused=self._paused or self._streaming_active(), completed=self._completed,
                         workers=len(self._threads))
 
+    def start_preparation(self, key, jobs):
+        with self._condition:
+            if self._closed or (self._preparation and self._preparation['running']):
+                return False
+            self._preparation_stop = threading.Event()
+            self._preparation = dict(key=key, running=True, checked=0, ready=0, failed=0, error=None)
+            self._preparation_thread = threading.Thread(
+                target=self._prepare, args=(jobs, self._preparation_stop), name='thumbnail-preparation', daemon=True)
+            self._preparation_thread.start()
+            return True
+
+    def preparation_status(self, key):
+        with self._condition:
+            if not self._preparation or self._preparation['key'] != key:
+                return None
+            return {name: value for name, value in self._preparation.items() if name != 'key'} | dict(
+                stopping=self._preparation_stop.is_set(), paused=self._paused or self._streaming_active())
+
+    def stop_preparation(self, key):
+        with self._condition:
+            if not self._preparation or self._preparation['key'] != key:
+                return False
+            self._preparation_stop.set()
+            self._condition.notify_all()
+            return True
+
+    def _prepare(self, jobs, stop):
+        outstanding = {}
+        try:
+            sources = iter(jobs(stop))
+            exhausted = False
+            while not stop.is_set():
+                for key, (source, output, width) in list(outstanding.items()):
+                    with self._condition:
+                        scheduled = key in self._pending or key in self._active
+                    if scheduled:
+                        continue
+                    if self.cached(source, output):
+                        result = 'ready'
+                    else:
+                        # Retry evicted/backpressured work; visible requests can promote it.
+                        accepted = self.submit(0, 20, source, output, width)
+                        if accepted or not (self.failed(0, output) or self._fingerprint(source) is None):
+                            continue
+                        result = 'failed'
+                    with self._condition:
+                        self._preparation[result] += 1
+                    del outstanding[key]
+                with self._condition:
+                    if self._closed or stop.is_set():
+                        break
+                    paused = self._paused or self._streaming_active()
+                if not paused and not exhausted and len(outstanding) < len(self._threads):
+                    try:
+                        source, output, width = next(sources)
+                        outstanding[str(output)] = (Path(source), Path(output), width)
+                        with self._condition:
+                            self._preparation['checked'] += 1
+                        continue
+                    except StopIteration:
+                        exhausted = True
+                if exhausted and not outstanding:
+                    break
+                with self._condition:
+                    self._condition.wait(.2)
+        except Exception:
+            logging.getLogger(__name__).exception('Thumbnail preparation failed')
+            with self._condition:
+                self._preparation['error'] = 'Could not finish reading this folder. Refresh it and try again.'
+        finally:
+            with self._condition:
+                for key in outstanding:
+                    if key in self._pending and self._pending[key]['priority'] == 20:
+                        del self._pending[key]
+                self._preparation['running'] = False
+                self._condition.notify_all()
+
     def pause(self, paused):
         with self._condition:
             self._paused = bool(paused)
@@ -173,5 +253,8 @@ class ImageScheduler:
     def close(self):
         with self._condition:
             self._closed = True
+            self._preparation_stop.set()
             self._pending.clear()
             self._condition.notify_all()
+        if self._preparation_thread:
+            self._preparation_thread.join(timeout=1)

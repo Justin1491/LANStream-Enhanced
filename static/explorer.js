@@ -47,7 +47,10 @@
   }
   async function write(url, data) {
     const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-LANStream-CSRF': csrf}, body: JSON.stringify(data)});
-    if (!response.ok) throw Error(response.status === 401 ? 'Sign in again to continue.' : 'Action failed. The item may be missing or access may have changed.');
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw Error(result.error || (response.status === 401 ? 'Sign in again to continue.' : 'Action failed. The item may be missing or access may have changed.'));
+    }
     return response.json();
   }
   function render(result) {
@@ -56,21 +59,44 @@
       history.replaceState(null, '', location.pathname + '?' + new URLSearchParams(state));
     }
     if (observer) observer.disconnect();
+    const signal = controller.signal, thumbnails = [];
+    let activeThumbnails = 0;
+    function drainThumbnails() {
+      // Leave connections free for paging while slow shares serve thumbnails.
+      while (!signal.aborted && activeThumbnails < 2 && thumbnails.length) {
+        activeThumbnails++;
+        thumbnails.shift()().finally(() => { activeThumbnails--; drainThumbnails(); });
+      }
+    }
     observer = new IntersectionObserver(entries => entries.forEach(entry => {
       if (!entry.isIntersecting) return;
       observer.unobserve(entry.target);
-      const image = entry.target.querySelector('img'); let attempts = 0;
+      const image = entry.target.querySelector('img'), deadline = Date.now() + 90000; let attempts = 0, retry;
+      signal.addEventListener('abort', () => clearTimeout(retry), {once: true});
       const check = async () => {
-        if (stopped || !image.isConnected) return;
+        if (stopped || signal.aborted || !image.isConnected) return;
         try {
-          const response = await fetch(image.dataset.ready, {cache: 'no-store'});
+          const response = await fetch(image.dataset.ready, {cache: 'no-store', signal});
           if (!response.ok) return;
           const ready = await response.json();
-          if (ready.ready) { image.src = image.dataset.src + '?v=' + encodeURIComponent(result.version || 'cached'); image.hidden = false; return; }
+          if (signal.aborted || !image.isConnected) return;
+          if (ready.ready) {
+            await new Promise(resolve => {
+              const done = () => {
+                image.removeEventListener('load', done); image.removeEventListener('error', done);
+                signal.removeEventListener('abort', cancel); resolve();
+              };
+              const cancel = () => { image.removeAttribute('src'); done(); };
+              image.addEventListener('load', done, {once: true}); image.addEventListener('error', done, {once: true});
+              signal.addEventListener('abort', cancel, {once: true});
+              image.src = image.dataset.src + '?v=' + encodeURIComponent(result.version || 'cached'); image.hidden = false;
+            });
+            return;
+          }
           if (ready.failed) return;
         } catch (_) { /* Revisit to retry unavailable thumbnails. */ }
-        if (++attempts < 40) setTimeout(check, 1500);
-      }; check();
+        if (!signal.aborted && Date.now() < deadline) retry = setTimeout(() => { thumbnails.push(check); drainThumbnails(); }, Math.min(1500, 250 * 2 ** Math.floor(++attempts / 4)));
+      }; thumbnails.push(check); drainThumbnails();
     }), {rootMargin: '160px 0px'});
     const fragment = document.createDocumentFragment();
     for (const item of result.items) {
@@ -127,16 +153,47 @@
   async function indexStatus(action) {
     const url = '/api/index/' + explorer.dataset.root + '?relative=' + encodeURIComponent(explorer.dataset.relative);
     try { const response = action ? await write(url, {action}) : await (await fetch(url)).json(); const crawl = response.crawls[0];
-      document.getElementById('indexStatus').textContent = crawl ? (crawl.paused ? 'Paused' : crawl.running ? 'Indexing' : 'Complete') + ': ' + crawl.completed + ' folders read, ' + crawl.pending + ' queued, ' + crawl.errors + ' errors.' : 'No recursive indexing started.';
-      if (crawl && crawl.running) indexPoll = setTimeout(() => indexStatus(), 2000);
-    } catch (_) { document.getElementById('indexStatus').textContent = 'Indexing status unavailable.'; }
+      if (stopped) return;
+      document.getElementById('indexStatus').textContent = crawl ? (crawl.paused ? 'Paused' : crawl.running ? 'Indexing library' : crawl.automatic ? 'Watching for changes' : 'Complete') + ': ' + crawl.completed + ' folders read, ' + crawl.pending + ' queued, ' + crawl.errors + ' errors.' : 'Automatic library indexing is starting.';
+    } catch (_) { if (!stopped) document.getElementById('indexStatus').textContent = 'Indexing status unavailable. Retrying…'; }
+    if (!stopped) indexPoll = setTimeout(() => indexStatus(), 2000);
   }
   if (document.getElementById('startIndex')) {
     document.getElementById('startIndex').onclick = () => { clearTimeout(indexPoll); indexStatus('start'); };
     document.getElementById('pauseIndex').onclick = () => { clearTimeout(indexPoll); indexStatus('pause'); }; indexStatus();
   }
+  let thumbnailPoll;
+  const prepare = document.getElementById('prepareThumbnails'), stop = document.getElementById('stopThumbnails');
+  async function preparationStatus(action) {
+    clearTimeout(thumbnailPoll);
+    const label = document.getElementById('thumbnailStatus');
+    const url = '/api/prepare-thumbnails/' + explorer.dataset.root + '?relative=' + encodeURIComponent(explorer.dataset.relative);
+    if (action) prepare.disabled = stop.disabled = true;
+    try {
+      let response;
+      if (action) response = await write(url, {action});
+      else {
+        const result = await fetch(url, {cache: 'no-store'});
+        if (!result.ok) throw Error('Thumbnail preparation status unavailable. Retrying…');
+        response = await result.json();
+      }
+      if (stopped) return;
+      const job = response.preparation;
+      prepare.disabled = !!(job && job.running); stop.hidden = !(job && job.running); stop.disabled = !!(job && job.stopping);
+      label.textContent = !job ? '' : job.error || (job.stopping ? (job.running ? 'Stopping preparation' : 'Preparation stopped') : job.running ? (job.paused ? 'Preparation paused during playback' : 'Preparing thumbnails') : 'Preparation complete') + ': ' + job.ready.toLocaleString() + ' ready, ' + job.failed.toLocaleString() + ' failed, ' + job.checked.toLocaleString() + ' checked.';
+      if (job && job.running) thumbnailPoll = setTimeout(() => preparationStatus(), 1000);
+    } catch (error) {
+      if (stopped) return;
+      label.textContent = error.message || 'Thumbnail preparation status unavailable. Retrying…';
+      prepare.disabled = false; stop.disabled = false;
+      thumbnailPoll = setTimeout(() => preparationStatus(), 2000);
+    }
+  }
+  if (prepare) {
+    prepare.onclick = () => preparationStatus('start'); stop.onclick = () => preparationStatus('stop'); preparationStatus();
+  }
   window.addEventListener('popstate', () => { restore(); load(false); });
-  window.addEventListener('pagehide', () => { stopped = true; clearTimeout(polling); clearTimeout(indexPoll); clearTimeout(debounce); if (controller) controller.abort(); if (observer) observer.disconnect(); });
-  window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; restore(); load(false); } });
+  window.addEventListener('pagehide', () => { stopped = true; clearTimeout(polling); clearTimeout(indexPoll); clearTimeout(thumbnailPoll); clearTimeout(debounce); if (controller) controller.abort(); if (observer) observer.disconnect(); });
+  window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; restore(); load(false); if (prepare) preparationStatus(); if (document.getElementById('startIndex')) indexStatus(); } });
   restore(); load(false);
 })();

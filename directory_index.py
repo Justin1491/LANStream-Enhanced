@@ -5,6 +5,7 @@ the OS returns, bounding abandoned work to the configured daemon worker count.
 """
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -46,9 +47,13 @@ def _natural(value):
 
 
 class DirectoryIndex:
-    def __init__(self, db_path, kind_for_suffix, ttl=300, workers=2, max_pending=32, scan_timeout=30):
+    def __init__(self, db_path, kind_for_suffix, ttl=300, workers=2, max_pending=32, scan_timeout=30, profiles=None):
         self.kind_for_suffix = kind_for_suffix
         self.ttl, self.scan_timeout = ttl, scan_timeout
+        self.profiles = profiles
+        self._automatic_libraries = {}
+        self._next_library_refresh = 0
+        self._crawl_after = ('', '')
         self.max_pending = max(1, max_pending)
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -148,6 +153,7 @@ class DirectoryIndex:
                     self._jobs.pop(job['key'], None)
                     self._hosts.discard(job['host'])
                     self._condition.notify_all()
+                    self._crawl_wake.set()
 
     def _timeout(self, job):
         with self._condition:
@@ -285,6 +291,24 @@ class DirectoryIndex:
             result.update(version=folder['version'] if folder else None, updated_at=folder['updated'] if folder else None, state=error_state or ('stale' if stale else 'ready' if folder else 'loading'), refreshing=key in self._jobs, error=error)
             return result
 
+    def thumbnail_sources(self, root, relative='', excluded=()):
+        relative, after = _relative(relative), ''
+        extra, values = self._exclusion_sql(root, excluded)
+        while True:
+            with self._lock:
+                rows = self._db.execute(
+                    'SELECT e.rel FROM entries e JOIN folders f ON e.root=f.root AND e.directory=f.directory '
+                    'AND e.version=f.version WHERE e.root=? AND e.directory=? AND e.rel COLLATE BINARY>? '
+                    "AND e.kind IN ('video','image','pdf','comic') "
+                    + ''.join(' AND ' + clause for clause in extra)
+                    + ' ORDER BY e.rel COLLATE BINARY LIMIT 100',
+                    [root_id(root), relative, after, *values]).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                yield row['rel']
+            after = rows[-1]['rel']
+
     def search(self, roots, *, query, excluded=None, scope_root=None, scope_relative='', recursive=True, page=1, page_size=100, file_type='all'):
         scope_relative = _relative(scope_relative)
         scope_relative = '' if scope_relative == '.' else scope_relative
@@ -355,6 +379,36 @@ class DirectoryIndex:
         with self._lock:
             return dict(self._counts, pending=len(self._pending), active=len(self._hosts), in_flight=len(self._jobs))
 
+    def _refresh_libraries(self):
+        try:
+            configured = {(str(profile['id']), root_id(root)): (Path(root), tuple(map(str, profile['excluded'])))
+                          for profile in self.profiles() for root in profile['roots']}
+            for root, excluded in configured.values():
+                self._exclusion_sql(root, excluded)
+        except (OSError, UnicodeError, ValueError):
+            logging.getLogger(__name__).warning('Unable to read library configuration; automatic indexing will retry.')
+            return
+        with self._condition:
+            if self._closed:
+                return
+            with self._db:
+                for row in self._db.execute('SELECT profile,root FROM crawls').fetchall():
+                    identity = (row['profile'], row['root'])
+                    if identity not in configured:
+                        self._db.execute('DELETE FROM crawl_frontier WHERE profile=? AND root=?', identity)
+                        self._db.execute('DELETE FROM crawls WHERE profile=? AND root=?', identity)
+            roots = {identity[1] for identity in configured}
+            for key, job in self._jobs.items():
+                if key[0] not in roots:
+                    job['expired'] = True
+            for identity, (root, excluded) in configured.items():
+                crawl = self._db.execute('SELECT relative,paused FROM crawls WHERE profile=? AND root=?', identity).fetchone()
+                unfinished = self._db.execute("SELECT 1 FROM crawl_frontier WHERE profile=? AND root=? AND state IN ('pending','scanning') LIMIT 1", identity).fetchone()
+                changed = self._automatic_libraries.get(identity) != (root, excluded)
+                if changed or not crawl or crawl['relative'] or (not crawl['paused'] and not unfinished):
+                    self.crawl_start(identity[0], root, excluded=excluded)
+            self._automatic_libraries = configured
+
     def crawl_start(self, profile_id, root, relative='', excluded=()):
         relative = _relative(relative)
         rid = root_id(root)
@@ -386,21 +440,27 @@ class DirectoryIndex:
                     continue
                 states = dict(self._db.execute('SELECT state,count(*) FROM crawl_frontier WHERE profile=? AND root=? GROUP BY state', (str(profile_id), rid)).fetchall())
                 pending, scanning = states.get('pending', 0), states.get('scanning', 0)
-                result.append(dict(root_id=rid, relative=crawl['relative'], paused=bool(crawl['paused']), running=not bool(crawl['paused']) and bool(pending + scanning), completed=states.get('done', 0), pending=pending, scanning=scanning, errors=states.get('error', 0)))
+                result.append(dict(root_id=rid, relative=crawl['relative'], paused=bool(crawl['paused']), running=not bool(crawl['paused']) and bool(pending + scanning), completed=states.get('done', 0), pending=pending, scanning=scanning, errors=states.get('error', 0), automatic=self.profiles is not None))
         return result
 
     def _crawl_worker(self):
         while True:
             self._crawl_wake.wait(.1)
             self._crawl_wake.clear()
+            if self.profiles is not None and time.monotonic() >= self._next_library_refresh:
+                self._next_library_refresh = time.monotonic() + max(.1, self.ttl)
+                self._refresh_libraries()
             # One coordinator shares the bounded scan queue and never enumerates files itself.
             with self._condition:
                 if self._closed:
                     return
-                rows = self._db.execute("SELECT c.*,f.directory,f.state FROM crawls c JOIN crawl_frontier f ON c.profile=f.profile AND c.root=f.root WHERE c.paused=0 AND f.state IN ('pending','scanning') ORDER BY f.state DESC LIMIT 1").fetchall()
+                busy = tuple({key[0] for key in self._jobs})
+                available = ' AND c.root NOT IN (' + ','.join('?' for _ in busy) + ')' if busy else ''
+                rows = self._db.execute("SELECT c.*,f.directory,f.state FROM crawls c JOIN crawl_frontier f ON c.profile=f.profile AND c.root=f.root WHERE c.paused=0 AND f.state IN ('pending','scanning')" + available + " ORDER BY (c.profile<? OR (c.profile=? AND c.root<=?)),c.profile,c.root,f.state DESC LIMIT 1", (*busy, self._crawl_after[0], *self._crawl_after)).fetchall()
                 if not rows:
                     continue
                 row = rows[0]
+                self._crawl_after = (row['profile'], row['root'])
                 key = row['root'], row['directory']
                 identity = row['profile'], row['root'], row['directory']
                 if key in self._jobs:

@@ -28,7 +28,7 @@
 <script>
 const poster=document.getElementById("poster");
 if(poster&&poster.classList.contains("pending")){
- let tries=0;
+ let tries=0; const deadline=Date.now()+90000;
  const check=async()=>{
   tries++;
   try{
@@ -36,8 +36,9 @@ if(poster&&poster.classList.contains("pending")){
    const j=await r.json();
    if(!j.current)return;
    if(j.ready){poster.src=poster.dataset.src+"?t="+Date.now();poster.classList.remove("pending");return;}
+   if(j.failed)return;
   }catch(_){}
-  if(tries<90&&document.contains(poster))setTimeout(check,1000);
+  if(Date.now()<deadline&&document.contains(poster))setTimeout(check,Math.min(1500,250*2**Math.floor(tries/4)));
  };
  check();
 }

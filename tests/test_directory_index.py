@@ -41,6 +41,20 @@ class DirectoryIndexTests(unittest.TestCase):
         self.assertEqual(self.index.listing(self.root)['total'], 100)
         self.assertEqual(len(self.index.listing(self.root, page_size=1)['items']), 1)
 
+    def test_thumbnail_sources_cover_folder_in_batches_without_crawling_or_exclusions(self):
+        for number in range(205):
+            (self.root / f'clip-{number:03}.mp4').touch()
+        (self.root / 'nested').mkdir()
+        (self.root / 'nested' / 'child.mp4').touch()
+        self.ready()
+        self.ready('nested')
+        with patch('directory_index.os.scandir', side_effect=AssertionError('Preparation rescanned media')):
+            sources = list(self.index.thumbnail_sources(self.root, excluded=('clip-001.mp4',)))
+        self.assertEqual(len(sources), 204)
+        self.assertNotIn('clip-001.mp4', sources)
+        self.assertNotIn('nested/child.mp4', sources)
+        self.assertEqual(len(set(sources)), 204)
+
     def test_page_is_clamped_when_refresh_removes_last_page(self):
         for name in ('one.mp4', 'two.mp4'):
             (self.root / name).touch()

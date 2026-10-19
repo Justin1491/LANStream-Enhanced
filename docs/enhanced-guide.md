@@ -29,7 +29,7 @@ port=8061
 transcoder=auto
 directory_cache_ttl=300
 directory_scan_timeout=30
-thumbnail_workers=1
+thumbnail_workers=2
 low_bandwidth_resolution=1280x720
 low_bandwidth_bitrate=3M
 
@@ -74,12 +74,23 @@ Current subtree or Current folder. Search from here carries the current folder.
 Search is partial until discovery finishes. Counts show cached coverage, never
 an invented percentage; offline results can be stale.
 
-Expand Background indexing in a folder to index its subtree explicitly. Pause
-stops new traversal work; an in-flight scan may finish. Start resumes pending
-work. Starting a completed task refreshes its subtree to discover additions.
-The frontier is durable, but persisted tasks are **paused after a restart**;
-resume them explicitly. Browsing remains available without exhaustive indexing.
-No recursive crawl or mass thumbnail generation starts automatically.
+All configured libraries and their subfolders are indexed automatically at
+server startup, including libraries for profiles that have not signed in.
+Background refresh passes discover added, renamed and removed files/folders
+without a browser being open. The interval uses **directory_cache_ttl** (300
+seconds/five minutes by default); a large or slow library can take longer to
+finish a pass. Root/profile configuration changes are picked up on the next
+background check. Exclusions and filesystem containment checks still apply.
+
+Expand **Background indexing** in any folder to see the current library's
+progress. **Pause library indexing** stops new traversal work for your profile;
+an in-flight scan may finish. **Resume / refresh library index** resumes pending
+work, or refreshes the entire library after a pass has finished. These controls
+apply to the library root even when opened inside a subfolder. Automatic
+indexing resumes after a server restart, including previously paused tasks.
+Browsing remains available while discovery runs. Offline failures retain the
+last good snapshots and are retried on a later pass. No mass thumbnail
+generation starts automatically.
 
 The star saves videos and folders. Stars appear in all views, search, Favorites,
 video details and the player. Favorites persist in SQLite by profile/root/path,
@@ -90,16 +101,31 @@ and therefore starts a new Favorites set for that profile.
 
 ## Thumbnails and media safety
 
-Only visible/near-visible items request thumbnails. Existing local thumbs and
-posters are reused. The queue holds at most 64 pending/active jobs, uses one
-worker by default (configurable to two), prioritizes visible/detail work and
+Visible/near-visible items request thumbnails automatically. Existing local thumbs and
+posters are reused. The queue holds at most 64 pending/active jobs, uses two
+workers by default (`thumbnail_workers=1` selects one), prioritizes visible/detail work and
 retains useful jobs after navigation. High-priority posters can displace lower
 priority pending jobs. Background thumbnails pause during active playback;
 priority-zero detail posters remain eligible. Failures back off for 60 seconds.
 The cache checks source freshness and prevents changed sources from publishing
 old queued work. Legacy cached images use file timestamps after restart; if a
 replacement deliberately preserves its old timestamp, remove its old cached
-image manually. Optional bulk thumbnail pre-generation is not included.
+image manually. Video candidates use one FFmpeg invocation to check blackness
+and extract the JPEG. Readiness checks start at 250 ms, then back off to 1.5
+seconds for slower jobs and stop after 90 seconds; revisiting retries them.
+
+To prepare thumbnails before browsing, open a folder and click **Prepare
+thumbnails**. This covers supported videos, pictures, PDFs and comics in the
+entire folder, including later pages, regardless of the current filter. It
+does not descend into subfolders. Preparation runs on the server after leaving
+the page and reuses cached images. Return to that folder to see ready/failed
+counts or click **Stop preparation**. Jobs already generating may finish.
+Preparation has lower priority than browsing, pauses during tracked playback,
+and feeds at most two items at a time through the same bounded queue. Only one
+folder can be prepared at a time. Preparation stops on application shutdown;
+start it again to continue using the images already cached. Keep the cache on
+local storage. On an N100, check playback and NAS load; select one worker if
+two compete with streaming. Existing explicit worker settings are retained.
 
 Media roots are read-only. The database, thumbnails and crawl frontier reside
 under the local cache. Symlinks, Windows junctions and reparse entries are
@@ -134,8 +160,9 @@ config.txt and the complete cache directory when upgrading. Stop the enhanced
 process before copying its database, including any `-wal` and `-shm` companions.
 Never delete the entire cache as a thumbnail cleanup operation.
 
-To refresh stale metadata, use Refresh folder or explicitly restart a completed
-indexing task. This preserves Favorites. Removed directory snapshots are
+Automatic library scans refresh metadata periodically. For an immediate
+refresh, use Refresh folder or Resume / refresh library index. This preserves
+Favorites. Removed directory snapshots are
 retired when a successful parent refresh no longer sees that directory.
 Offline failures retain data. Unknown schema versions or corrupt databases
 fail closed rather than silently deleting favorites. Restore a known-good
@@ -152,6 +179,7 @@ From the source checkout on Windows:
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+node --test tests/explorer.test.cjs tests/player.test.cjs
 .\.venv\Scripts\python.exe scripts\benchmark.py --count 25969 --repeats 20 --output benchmark-results\local.json
 ```
 

@@ -6,7 +6,7 @@ master_password=
 transcoder=auto
 directory_cache_ttl=300
 directory_scan_timeout=30
-thumbnail_workers=1
+thumbnail_workers=2
 low_bandwidth_resolution=854x480
 low_bandwidth_bitrate=2M
 

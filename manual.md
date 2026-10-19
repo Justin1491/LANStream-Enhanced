@@ -767,7 +767,7 @@ When authentication is enabled, use the LANStream logout function to clear the c
 
 # Browsing Media
 
-Use the [Enhanced operations guide](docs/enhanced-guide.md#browse-search-and-favorites) for List/Grid/Details, full-folder filtering and sorting, pagination, indexed search, favorites, refresh, offline behavior and explicit recursive indexing. It replaces the upstream all-items page and client-only filter.
+Use the [Enhanced operations guide](docs/enhanced-guide.md#browse-search-and-favorites) for List/Grid/Details, full-folder filtering and sorting, pagination, indexed search, favorites, refresh, offline behavior and automatic recursive library indexing. It replaces the upstream all-items page and client-only filter.
 
 ---
 
@@ -789,6 +789,8 @@ The detail page may show information such as:
 Select **Play** to open the dedicated player.
 
 The player begins playback automatically when allowed by the browser.
+If the browser blocks autoplay, the player displays **Tap Play to start playback.**
+Tap **Play** to begin. **Buffering…** appears when an active playback attempt needs more video data.
 
 ## Player controls
 
@@ -804,6 +806,11 @@ The player includes controls for:
 - stream quality mode
 - audio track selection when available
 - supported subtitle selection when available
+
+On iPhone Safari, **Fullscreen** opens Safari's native video player when page
+fullscreen is unavailable. Use Safari's **Done** control to return to LANStream.
+Choose stream quality, audio and subtitles before entering native fullscreen.
+If fullscreen fails while the video is loading, start playback and try again.
 
 ---
 

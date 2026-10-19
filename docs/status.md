@@ -2,8 +2,8 @@
 
 October 18, 2026. Based on candre23/LANStream b837a21, branch
 `feature/fast-smb-explorer`. User fork:
-https://github.com/Justin1491/LANStream-Enhanced. Enhanced commits remain local;
-no enhanced changes were pushed and no upstream PR was opened.
+https://github.com/Justin1491/LANStream-Enhanced. The Enhanced source is maintained
+in this fork; no upstream PR was opened.
 
 ## Implemented and locally verified
 
@@ -11,8 +11,8 @@ Persistent atomic directory snapshots; deduplicated/background/host-bounded
 scans; stale/offline responses and manual refresh; whole-folder sorting and
 filtering; bounded 100-item List/Grid/Details pages; device view preferences;
 64x40 List video previews; prioritized navigation-persistent thumbnails;
-Unicode substring search with containing paths and coverage; explicit durable
-recursive indexing with pause/resume; profile-scoped video/folder Favorites,
+Unicode substring search with containing paths and coverage; automatic durable
+recursive library indexing with periodic refresh and pause/resume; profile-scoped video/folder Favorites,
 including details/player controls; local Windows packaging and guide.
 
 The latest build adds All/Videos/Pictures/Documents filtering before counts,
@@ -60,7 +60,7 @@ numbers of requests and must not be interpreted as equivalent workloads.
 
 ## Verification
 
-- Application suite: **59 tests passed, no skips**, including Windows junctions and
+- Application suite: **83 tests passed, no skips**, including Windows junctions and
   symlinks, 0/1/100/25,969/100,000 entry cases, concurrent scans, stale/offline
   snapshots, interrupted publication, Unicode/natural ordering, exclusions,
   traversal, profile isolation, persistent favorites/crawls, corruption/schema
@@ -74,7 +74,9 @@ numbers of requests and must not be interpreted as equivalent workloads.
   rejection of modified installers, and the actual CMD launcher in a folder
   containing spaces, an ampersand and Unicode. Personal mappings are generated
   only in ignored release artifacts; the tracked config remains generic.
-- Combined suite: **82 tests passed, no skips**. Actual ZIP installation,
+- Combined suite: **106 tests passed, no skips**. The **14 JavaScript tests** also
+  passed, covering thumbnail navigation, autoplay recovery and fullscreen fallback.
+  Actual ZIP installation,
   authenticated HTTP checks, inherited environment isolation and preservation
   of an unrelated LANStream process passed locally. Local QSV failure correctly
   fails acceptance and stops only the installer-owned server. The keep-running
@@ -124,7 +126,10 @@ prove Safari compatibility. Docker source copying is updated; a Docker build
 was not run. Non-video viewers passed locally using fictional fixtures; real
 large/encrypted/unusual documents and physical Safari remain target checks.
 
-Optional bulk thumbnail pre-generation is omitted. New/changed sources with
+Optional current-folder thumbnail preparation is included in the rebuilt package, with two
+workers by default, combined video extraction and faster initial readiness
+checks. The Windows executable was rebuilt and its isolated loopback smoke test passed.
+New/changed sources with
 deliberately preserved timestamps can require manual removal of legacy cache
 images after a restart. The guide documents this, blocked Windows filesystem
 calls, partial index coverage, profile-password identity changes and safe

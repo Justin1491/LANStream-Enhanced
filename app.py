@@ -77,7 +77,7 @@ def load_settings() -> dict[str, str]:
         "transcoder": "auto",
         "directory_cache_ttl": "300",
         "directory_scan_timeout": "30",
-        "thumbnail_workers": "1",
+        "thumbnail_workers": "2",
         "low_bandwidth_resolution": "854x480",
         "low_bandwidth_bitrate": "2M",
     }
@@ -384,8 +384,8 @@ def load_roots() -> list[Path]:
     return profile["roots"] if profile else []
 
 
-def path_is_excluded(path: Path) -> bool:
-    profile = active_profile()
+def path_is_excluded(path: Path, profile=None) -> bool:
+    profile = active_profile() if profile is None else profile
     if not profile:
         return True
 
@@ -423,7 +423,7 @@ def get_root(index: int) -> Path:
     return root
 
 
-def safe_path(root: Path, relative: str) -> Path:
+def safe_path(root: Path, relative: str, profile=None) -> Path:
     try:
         rr = root.resolve(strict=False)
         p = (root / relative).resolve(strict=False)
@@ -431,7 +431,7 @@ def safe_path(root: Path, relative: str) -> Path:
     except (ValueError, RuntimeError):
         abort(403)
 
-    if path_is_excluded(p):
+    if path_is_excluded(p, profile):
         abort(404)
 
     return p
@@ -465,6 +465,7 @@ directory_index = DirectoryIndex(
     CACHE_DIR / 'index.sqlite3', kind_for_suffix,
     ttl=max(1, float(SETTINGS['directory_cache_ttl'])),
     scan_timeout=max(1, float(SETTINGS['directory_scan_timeout'])),
+    profiles=load_profiles,
 )
 
 
@@ -565,25 +566,6 @@ def screenshot_candidates(info: dict[str, Any]) -> list[float]:
         if not any(abs(value - existing) < 0.5 for existing in result):
             result.append(value)
     return result
-
-
-def frame_black_percent(source: Path, stamp: float) -> float | None:
-    """Return the percentage of sampled pixels FFmpeg considers black."""
-    cmd = [
-        FFMPEG, "-hide_banner", "-loglevel", "info",
-        "-ss", f"{stamp:.3f}", "-i", str(source),
-        "-frames:v", "1",
-        "-vf", "blackframe=amount=0:threshold=32",
-        "-f", "null", "-"
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        match = re.search(r"pblack:(\d+)", proc.stderr or "")
-        if match:
-            return float(match.group(1))
-    except Exception:
-        pass
-    return None
 
 
 def _save_pillow_jpeg(image: Image.Image, output: Path, width: int) -> None:
@@ -758,17 +740,18 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
         for stamp in candidates:
             if not scheduler.is_current(source, output):
                 return
-            black_percent = frame_black_percent(source, stamp)
-            if black_percent is not None and black_percent >= 85:
-                continue
             cmd = [
-                FFMPEG, "-hide_banner", "-loglevel", "error",
+                FFMPEG, "-hide_banner", "-loglevel", "info",
                 "-ss", f"{stamp:.3f}", "-i", str(source),
                 "-frames:v", "1",
-                "-vf", f"scale={width}:-2:force_original_aspect_ratio=decrease",
+                "-vf", f"blackframe=amount=0:threshold=32,scale={width}:-2:force_original_aspect_ratio=decrease",
                 "-q:v", "3", "-y", str(tmp),
             ]
             proc = subprocess.run(cmd, capture_output=True, timeout=90)
+            match = re.search(rb"pblack:(\d+)", proc.stderr or b"")
+            if match and int(match.group(1)) >= 85:
+                tmp.unlink(missing_ok=True)
+                continue
             if (
                 proc.returncode == 0
                 and tmp.exists()
@@ -1195,12 +1178,55 @@ def indexing_api(root_index):
             abort(400)
         action = data.get('action')
         if action in {'start', 'resume'}:
+            if directory_index.profiles is not None:
+                relative = ''
             directory_index.crawl_start(profile['id'], root, relative, excluded=excluded)
         elif action == 'pause':
             directory_index.crawl_pause(profile['id'], root, True)
         else:
             abort(400)
     return jsonify(crawls=directory_index.crawl_status(profile['id'], [root]))
+
+
+def thumbnail_jobs(root_index, profile, root, relative, excluded, stop):
+    folder = safe_path(root, relative, profile)
+    if not folder.is_dir():
+        raise OSError('Thumbnail preparation requires a folder')
+    while not stop.is_set():
+        listing = directory_index.listing(root, relative, excluded=excluded)
+        if listing['error']:
+            raise OSError('Folder snapshot unavailable')
+        if listing['version'] and not listing['refreshing']:
+            break
+        if stop.wait(.2):
+            return
+    for rel in directory_index.thumbnail_sources(root, relative, excluded):
+        if stop.is_set():
+            return
+        try:
+            source = safe_path(root, rel, profile)
+            if media_kind(source) in {'video', 'image', 'pdf', 'comic'}:
+                yield source, cache_path('thumbs', root_index, root, source), 360
+        except (HTTPException, OSError):
+            continue
+
+
+@app.route('/api/prepare-thumbnails/<int:root_index>', methods=['GET', 'POST'])
+def prepare_thumbnails_api(root_index):
+    profile, root, relative, excluded = explorer_context(root_index, request.args.get('relative', ''))
+    key = (profile['id'], root_id(root), relative)
+    if request.method == 'POST':
+        explorer_write_check()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or data.get('action') not in {'start', 'stop'}:
+            abort(400)
+        if data['action'] == 'start':
+            if not image_scheduler.start_preparation(key, lambda stop: thumbnail_jobs(
+                    root_index, profile, root, relative, excluded, stop)):
+                return jsonify(error='A folder is already being prepared. Let it finish before starting another.'), 409
+        else:
+            image_scheduler.stop_preparation(key)
+    return jsonify(preparation=image_scheduler.preparation_status(key))
 
 
 @app.route("/image/<int:root_index>/<path:relpath>")

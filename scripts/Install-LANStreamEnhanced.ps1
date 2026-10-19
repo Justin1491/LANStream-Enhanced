@@ -439,7 +439,7 @@ function Invoke-LanStreamInstaller {
         $logs = Join-Path $InstallDirectory 'acceptance-logs'
         [IO.Directory]::CreateDirectory($logs) | Out-Null
         [IO.Directory]::CreateDirectory((Join-Path $InstallDirectory 'cache')) | Out-Null
-        $config = "# Isolated Enhanced acceptance profile. Private: contains password and media paths.`r`nport=8061`r`nuse_master_password=false`r`nmaster_password=`r`ntranscoder=auto`r`ndirectory_cache_ttl=300`r`ndirectory_scan_timeout=30`r`nthumbnail_workers=1`r`nlow_bandwidth_resolution=854x480`r`nlow_bandwidth_bitrate=2M`r`n`r`n<" + $plain + ">`r`n" + ($MediaRoot -join "`r`n") + "`r`n"
+        $config = "# Isolated Enhanced acceptance profile. Private: contains password and media paths.`r`nport=8061`r`nuse_master_password=false`r`nmaster_password=`r`ntranscoder=auto`r`ndirectory_cache_ttl=300`r`ndirectory_scan_timeout=30`r`nthumbnail_workers=2`r`nlow_bandwidth_resolution=854x480`r`nlow_bandwidth_bitrate=2M`r`n`r`n<" + $plain + ">`r`n" + ($MediaRoot -join "`r`n") + "`r`n"
         if ($template) { $config = $template.Text.Replace('__LANSTREAM_SETUP_PASSWORD__', $plain) }
         [IO.File]::WriteAllText((Join-Path $InstallDirectory 'config.txt'), $config, (New-Object Text.UTF8Encoding $false))
         $config = $null
@@ -533,7 +533,7 @@ function Invoke-LanStreamInstaller {
             Assert-LanStreamListing $search
             $latencies += $response.Milliseconds
         }
-        & $addCheck 'Global filename search coverage' 'PASS' @{ scope = 'Cached folders visited by these checks; no recursive crawl was started'; roots = $MediaRoot.Count }
+        & $addCheck 'Global filename search coverage' 'PASS' @{ scope = 'Partial background library index; automatic discovery may still be in progress'; roots = $MediaRoot.Count }
         $p95 = Get-LanStreamPercentile95 $latencies
         & $addCheck 'Global filename search p95' $(if ($p95 -le 300) { 'PASS' } else { 'FAIL' }) @{ requests = 20; milliseconds = $p95; target_ms = 300 }
         if ($firstVideo) {

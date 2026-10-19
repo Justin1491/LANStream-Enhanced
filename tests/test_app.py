@@ -17,6 +17,8 @@ class ExplorerRoutes(unittest.TestCase):
         os.environ['LANSTREAM_CACHE_DIR'] = str(cls.work / 'cache')
         import app
         cls.server = app
+        app.directory_index.close()
+        app.directory_index = app.DirectoryIndex(cls.work / 'index.sqlite3', app.kind_for_suffix)
         app.app.config.update(TESTING=True)
 
     @classmethod
@@ -60,6 +62,41 @@ class ExplorerRoutes(unittest.TestCase):
         self.assertEqual([item['name'] for item in payload['items']], ['Café Clip 2.mp4', 'Café Clip 10.mp4'])
         with patch('os.scandir', side_effect=AssertionError('warm request scanned media')):
             self.assertEqual(self.client.get('/api/browse/0/').status_code, 200)
+
+    def test_thumbnail_preparation_requires_csrf_and_respects_profile_folder_scope(self):
+        import time
+        from image_scheduler import ImageScheduler
+        (self.root / 'Notes.txt').touch()
+        self.warm()
+        generated = []
+        def generate(source, output, *args):
+            generated.append(source.name)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b'jpeg')
+        scheduler = ImageScheduler(generate)
+        try:
+            with patch.object(self.server, 'image_scheduler', scheduler):
+                url = '/api/prepare-thumbnails/0'
+                self.assertEqual(self.client.post(url, json={'action': 'start'}).status_code, 403)
+                self.assertEqual(self.client.post(url, json=[], headers=self.csrf()).status_code, 400)
+                self.assertEqual(self.client.post(url, json={'action': 'unknown'}, headers=self.csrf()).status_code, 400)
+                self.assertEqual(self.client.post(url + '?relative=Private', json={'action': 'start'}, headers=self.csrf()).status_code, 404)
+                response = self.client.post(url, json={'action': 'start'}, headers=self.csrf())
+                self.assertEqual(response.status_code, 200)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    preparation = self.client.get(url).get_json()['preparation']
+                    if not preparation['running']:
+                        break
+                    time.sleep(.01)
+                self.assertFalse(preparation['running'])
+                self.assertEqual((preparation['ready'], preparation['failed']), (2, 0))
+                self.assertEqual(set(generated), {'Café Clip 2.mp4', 'Café Clip 10.mp4'})
+                bob = self.server.app.test_client()
+                bob.post('/login', data={'password': 'bob'})
+                self.assertIsNone(bob.get(url).get_json()['preparation'])
+        finally:
+            scheduler.close()
 
     def test_search_exclusions_scope_and_full_parent_paths(self):
         self.warm()

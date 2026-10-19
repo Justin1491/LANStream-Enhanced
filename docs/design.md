@@ -52,8 +52,13 @@ across navigation, promotes visible work and backs off failures.
 
 Search uses Unicode casefolded filename substrings over cached snapshots.
 The SQL strategy is benchmarked before claiming target performance. Only
-visited directories are indexed automatically. An explicit bounded recursive
-index task persists pending directories locally and supports pause/resume.
+configured libraries and their descendants are indexed automatically at startup.
+The existing bounded recursive task persists pending directories locally,
+supports pause/resume and repeats completed passes at the directory-cache TTL.
+It reloads profile/root configuration on each background check, retries offline
+failures and retains last-good snapshots. A blocked root does not prevent the
+coordinator from scheduling other roots; the existing per-host worker bound
+still applies. No media filesystem work occurs in a request handler.
 Favorites live in a separate SQLite table scoped to the authenticated profile,
 root ID and relative path. They survive index refresh/rebuild and missing media.
 

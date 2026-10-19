@@ -72,8 +72,10 @@ The automated checks cover bundled tool versions, authentication, home/static
 assets, each root's cold listing and 20 warm samples, 100-item bounds, new File
 type categories, indexed filename search, a bounded byte-range read when a
 video appears on a tested first page, actual QSV encoding of synthetic frames,
-and the application's selected QSV backend. Search coverage is limited to
-visited folders; no recursive crawl or bulk thumbnail generation is started.
+and the application's selected QSV backend. The application automatically indexes
+all configured libraries in the background and refreshes them periodically;
+search coverage is partial until discovery finishes. The acceptance checks do
+not wait for an exhaustive crawl or start bulk thumbnail generation.
 Cold means a new application cache; Windows/SMB caches are not flushed.
 
 Warm browse p95 must be at most 500 ms and search p95 at most 300 ms. Real QSV

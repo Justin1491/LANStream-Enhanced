@@ -66,6 +66,7 @@ function usingDirect(){return nativePlayback&&!lowBandwidth;}
 function logicalTime(){return usingDirect()?(video.currentTime||0):logicalOffset+(video.currentTime||0);}
 function audio(){return audioSelect?audioSelect.value:"";}
 function msg(t){message.textContent=t;message.classList.toggle("hidden",!t);}
+function playbackRejected(error){if(error.name==="NotAllowedError")msg("Tap Play to start playback.");}
 function subtitles(start){
  video.querySelectorAll("track").forEach(t=>t.remove());
  if(!subtitleSelect||!subtitleSelect.value)return;
@@ -75,29 +76,34 @@ function subtitles(start){
 function transcode(at){
  logicalOffset=Math.max(0,Math.min(totalDuration,at));subtitles(logicalOffset);msg("Starting transcoded stream…");
  video.src=transcodeBase+"?start="+encodeURIComponent(logicalOffset)+"&audio="+encodeURIComponent(audio())+(lowBandwidth?"&low=1":"");
- video.load();video.play().catch(()=>{});
+ video.load();video.play().catch(playbackRejected);
 }
 function start(at=0){
  if(usingDirect()){
   if(!started){subtitles(0);video.src=nativeUrl;video.load();}
-  const playAt=()=>{try{video.currentTime=at;}catch(_){} video.play().catch(()=>{});};
+  const playAt=()=>{try{video.currentTime=at;}catch(_){} video.play().catch(playbackRejected);};
   if(video.readyState>=1)playAt();else video.addEventListener("loadedmetadata",playAt,{once:true});
  }else transcode(at);
  started=true;
 }
 function go(t){t=Math.max(0,Math.min(totalDuration,t));if(!started)return start(t);usingDirect()?video.currentTime=t:transcode(t);}
 function fullscreenElement(){return document.fullscreenElement||document.webkitFullscreenElement||null;}
-function isFullscreen(){return fullscreenElement()===playerShell;}
+function isFullscreen(){return fullscreenElement()===playerShell||!!video.webkitDisplayingFullscreen;}
 async function toggleFullscreen(){
  try{
-  if(isFullscreen()){
+  if(video.webkitDisplayingFullscreen){
+   video.webkitExitFullscreen();
+  }else if(isFullscreen()){
    if(document.exitFullscreen)await document.exitFullscreen();
    else if(document.webkitExitFullscreen)document.webkitExitFullscreen();
   }else{
-   if(playerShell.requestFullscreen)await playerShell.requestFullscreen();
-   else if(playerShell.webkitRequestFullscreen)playerShell.webkitRequestFullscreen();
+   if(playerShell.requestFullscreen&&document.fullscreenEnabled!==false)await playerShell.requestFullscreen();
+   else if(playerShell.webkitRequestFullscreen&&document.webkitFullscreenEnabled!==false)playerShell.webkitRequestFullscreen();
+   // iPhone Safari uses native video fullscreen when page fullscreen is unavailable.
+   else if(video.webkitEnterFullscreen)video.webkitEnterFullscreen();
+   else msg("Fullscreen is not supported by this browser.");
   }
- }catch(_){}
+ }catch(_){msg("Unable to change fullscreen. Start playback and try again.");}
 }
 function clearControlsTimer(){if(controlsTimer!==null){window.clearTimeout(controlsTimer);controlsTimer=null;}}
 function scheduleControlsHide(){
@@ -114,12 +120,12 @@ function updateFullscreenState(){
  showControls();
 }
 
-togglePlay.onclick=()=>{showControls();if(!started)return start(0);video.paused?video.play().catch(()=>{}):video.pause();};
+togglePlay.onclick=()=>{showControls();if(!started)return start(0);video.paused?video.play().catch(playbackRejected):video.pause();};
 back30.onclick=()=>{showControls();go(logicalTime()-30);};
 forward30.onclick=()=>{showControls();go(logicalTime()+30);};
 video.addEventListener("playing",()=>{msg("");togglePlay.textContent="Pause";scheduleControlsHide();});
 video.addEventListener("pause",()=>{togglePlay.textContent="Play";showControls();clearControlsTimer();});
-video.addEventListener("waiting",()=>{if(started)msg("Buffering…");});
+video.addEventListener("waiting",()=>{if(started&&!video.paused)msg("Buffering…");});
 video.addEventListener("error",()=>{const e=video.error;msg("Playback failed"+(e?` (browser error ${e.code})`:"")+". Check /transcoder-status and the LANStream container log.");});
 seek.oninput=()=>{dragging=true;showControls();currentLabel.textContent=fmt(Number(seek.value));};
 seek.onchange=()=>{dragging=false;go(Number(seek.value));scheduleControlsHide();};
@@ -148,5 +154,7 @@ document.addEventListener("keydown",event=>{
 });
 document.addEventListener("fullscreenchange",updateFullscreenState);
 document.addEventListener("webkitfullscreenchange",updateFullscreenState);
+video.addEventListener("webkitbeginfullscreen",updateFullscreenState);
+video.addEventListener("webkitendfullscreen",updateFullscreenState);
 window.addEventListener("DOMContentLoaded",()=>{start(0);updateFullscreenState();});
 </script><script src="{{ url_for('static', filename='favorite.js') }}" defer></script></body></html>
