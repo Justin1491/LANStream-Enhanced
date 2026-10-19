@@ -2,9 +2,9 @@
   "date": "2026-10-18",
   "environment": "Development Windows; fictional media; loopback 8061",
   "python_suite": {
-    "tests": 55,
+    "tests": 59,
     "skipped": 0,
-    "passed": 55
+    "passed": 59
   },
   "viewer_route_tests": 14,
   "source_browser": {
@@ -74,5 +74,26 @@
   "production_modified": false,
   "real_SMB_tested": false,
   "N100_QSV_tested": false,
-  "physical_Safari_tested": false
+  "physical_Safari_tested": false,
+  "file_type_filters": {
+    "latest_file_type_filters": true,
+    "checks": [
+      {
+        "viewport": "1440x1000",
+        "browse": true,
+        "search": true,
+        "favorites": true,
+        "history": true,
+        "no_horizontal_overflow": true
+      },
+      {
+        "viewport": "390x844",
+        "browse": true,
+        "search": true,
+        "favorites": true,
+        "history": true,
+        "no_horizontal_overflow": true
+      }
+    ]
+  }
 }

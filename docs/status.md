@@ -15,6 +15,12 @@ Unicode substring search with containing paths and coverage; explicit durable
 recursive indexing with pause/resume; profile-scoped video/folder Favorites,
 including details/player controls; local Windows packaging and guide.
 
+The latest build adds All/Videos/Pictures/Documents filtering before counts,
+sorting and pagination in browse, search and Favorites. Folders remain
+navigable. The [N100 installer](n100-installer.md) verifies a matching release
+manifest and ZIP, creates an isolated Enhanced test install, and runs bounded
+acceptance checks without controlling production.
+
 The source audit found the upstream Low Bandwidth toggle was ignored by its
 backend. The shared encoder command now applies configured scale/bitrate,
 retains aspect ratio and even dimensions, avoids upscaling, and uses 128 kbps
@@ -54,11 +60,21 @@ numbers of requests and must not be interpreted as equivalent workloads.
 
 ## Verification
 
-- Full Python suite: **55 tests passed, no skips**, including Windows junctions and
+- Application suite: **59 tests passed, no skips**, including Windows junctions and
   symlinks, 0/1/100/25,969/100,000 entry cases, concurrent scans, stale/offline
   snapshots, interrupted publication, Unicode/natural ordering, exclusions,
   traversal, profile isolation, persistent favorites/crawls, corruption/schema
   refusal and thumbnail replacement/priority/backoff cases.
+- Windows PowerShell 5.1 installer guardrails: **13 tests passed** for protected
+  paths, existing installs, junctions, unsafe ZIPs, SHA256/manifest mismatches,
+  occupied port 8061, bounded tool shutdown and latency statistics. No test
+  writes production data or controls its process.
+- Combined suite: **72 tests passed, no skips**. Actual ZIP installation,
+  authenticated HTTP checks, inherited environment isolation and preservation
+  of an unrelated LANStream process passed locally. Local QSV failure correctly
+  fails acceptance and stops only the installer-owned server. The keep-running
+  success branch was tested with QSV results explicitly simulated, not counted
+  as N100 hardware acceptance. See [installer evidence](n100-installer-local.json).
 - Added **14 non-video viewer regressions** and exercised the source server and
   rebuilt portable executable in Chrome at 1440x1000 and 390x844. PNG/JPEG/TIFF,
   PDF, CBZ, genuine CBR through 7-Zip, UTF-8 text and Markdown passed navigation,

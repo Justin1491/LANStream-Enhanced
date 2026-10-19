@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-18",
+  "platform": "Development Windows; Windows PowerShell 5.1",
+  "combined_python_tests": {
+    "tests": 72,
+    "skipped": 0,
+    "passed": 72
+  },
+  "installer_guardrail_tests": 13,
+  "latest_app_file_type_filters": "Desktop/mobile actual executable passed",
+  "real_local_integration": {
+    "mode": "real-hardware",
+    "installer_exit_code": 1,
+    "installer_status": "FAIL",
+    "unrelated_process_preserved": true,
+    "inherited_environment_restored": true,
+    "process_cleanup_verified": true,
+    "checks": 17,
+    "hardware_simulated": false
+  },
+  "simulated_hardware_success_integration": {
+    "mode": "simulated-hardware",
+    "installer_exit_code": 0,
+    "installer_status": "PASS",
+    "unrelated_process_preserved": true,
+    "inherited_environment_restored": true,
+    "process_cleanup_verified": true,
+    "checks": 17,
+    "hardware_simulated": true
+  },
+  "hardware_note": "Development host QSV fails. Real failure handling verified. Success branch simulates only QSV tool/status results; it is not N100 hardware acceptance.",
+  "production_deployment_performed": false,
+  "physical_client_checks_performed": false,
+  "independent_review": {
+    "remaining_findings": 0,
+    "effort": "high",
+    "model": "gpt-6.1-sol"
+  }
+}
