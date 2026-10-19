@@ -16,6 +16,14 @@ from collections import deque
 from pathlib import Path, PurePosixPath
 
 
+FILE_TYPE_KINDS = {
+    'all': (),
+    'videos': ('folder', 'video'),
+    'pictures': ('folder', 'image'),
+    'documents': ('folder', 'pdf', 'comic', 'text'),
+}
+
+
 def root_id(root: Path) -> str:
     return 'root_' + hashlib.sha256(os.path.normcase(os.path.abspath(root)).encode('utf-8')).hexdigest()[:16]
 
@@ -242,8 +250,12 @@ class DirectoryIndex:
             params.extend((folded, len(prefix), prefix))
         return clauses, params
 
-    def _page(self, sql, params, page, page_size, sort='name', descending=False):
+    def _page(self, sql, params, page, page_size, sort='name', descending=False, file_type='all'):
         page, page_size = max(1, int(page)), min(500, max(1, int(page_size)))
+        kinds = FILE_TYPE_KINDS[file_type]
+        if kinds:
+            sql += ' AND e.kind IN (' + ','.join('?' for _ in kinds) + ')'
+            params = [*params, *kinds]
         field = {'name': 'e.name COLLATE NATURAL_NAME', 'date': 'e.mtime', 'mtime': 'e.mtime', 'size': 'e.size', 'type': 'e.kind'}.get(sort, 'e.name COLLATE NATURAL_NAME')
         self._db.create_function('casefold', 1, lambda value: value.casefold(), deterministic=True)
         total = self._db.execute('SELECT count(*) ' + sql, params).fetchone()[0]
@@ -252,7 +264,7 @@ class DirectoryIndex:
         items = [{key: row[key] for key in ('name', 'rel', 'kind', 'size', 'mtime')} | {'root_id': row['root'], 'parent': row['rel'].rpartition('/')[0]} for row in rows]
         return dict(items=items, total=total, page=page, page_size=page_size, pages=(total + page_size - 1) // page_size)
 
-    def listing(self, root, relative='', *, page=1, page_size=100, sort='name', descending=False, query='', excluded=(), refresh=False):
+    def listing(self, root, relative='', *, page=1, page_size=100, sort='name', descending=False, query='', excluded=(), refresh=False, file_type='all'):
         relative = _relative(relative)
         if relative == '.':
             relative = ''
@@ -268,12 +280,12 @@ class DirectoryIndex:
             clauses = ['e.root=?', 'e.directory=?', 'e.version=?', 'instr(e.folded,?)>0']
             params = [rid, relative, folder['version'] if folder else '', query.casefold()]
             extra, values = self._exclusion_sql(root, excluded)
-            result = self._page('FROM entries e WHERE ' + ' AND '.join(clauses + extra), params + values, page, page_size, sort, descending)
+            result = self._page('FROM entries e WHERE ' + ' AND '.join(clauses + extra), params + values, page, page_size, sort, descending, file_type)
             error_state, error = self._errors.get(key, (None, None))
             result.update(version=folder['version'] if folder else None, updated_at=folder['updated'] if folder else None, state=error_state or ('stale' if stale else 'ready' if folder else 'loading'), refreshing=key in self._jobs, error=error)
             return result
 
-    def search(self, roots, *, query, excluded=None, scope_root=None, scope_relative='', recursive=True, page=1, page_size=100):
+    def search(self, roots, *, query, excluded=None, scope_root=None, scope_relative='', recursive=True, page=1, page_size=100, file_type='all'):
         scope_relative = _relative(scope_relative)
         scope_relative = '' if scope_relative == '.' else scope_relative
         excluded = excluded or {}
@@ -300,7 +312,7 @@ class DirectoryIndex:
                 count = self._db.execute('SELECT count(*) FROM entries e JOIN folders f ON e.root=f.root AND e.directory=f.directory AND e.version=f.version WHERE ' + ' AND '.join(part), values).fetchone()[0]
                 coverage.append(dict(root_id=rid, folders=folders[0], items=count, updated_at=folders[1], refreshing=any(key[0] == rid for key in self._jobs)))
             sql = 'FROM entries e JOIN folders f ON e.root=f.root AND e.directory=f.directory AND e.version=f.version WHERE (' + (' OR '.join(clauses) or '0') + ') AND instr(e.folded,?)>0'
-            result = self._page(sql, params + [query.casefold()], page, page_size)
+            result = self._page(sql, params + [query.casefold()], page, page_size, file_type=file_type)
             result.update(coverage=coverage, state='ready', refreshing=any(x['refreshing'] for x in coverage), version=None, updated_at=max((x['updated_at'] or 0 for x in coverage), default=0), error=None)
             return result
 
@@ -312,7 +324,7 @@ class DirectoryIndex:
             else:
                 self._db.execute('DELETE FROM favorites WHERE profile=? AND root=? AND rel=?', (str(profile_id), root_id(root), relative))
 
-    def favorites(self, profile_id, roots, *, excluded=None, page=1, page_size=100):
+    def favorites(self, profile_id, roots, *, excluded=None, page=1, page_size=100, file_type='all'):
         excluded = excluded or {}
         with self._lock:
             clauses, params = [], []
@@ -321,8 +333,8 @@ class DirectoryIndex:
                 extra, values = self._exclusion_sql(root, excluded.get(rid, ()))
                 clauses.append('(' + ' AND '.join(['e.root=?', *extra]) + ')')
                 params.extend([rid, *values])
-            sql = 'FROM (SELECT root,rel,kind,name,0 AS size,NULL AS mtime FROM favorites WHERE profile=?) e WHERE ' + (' OR '.join(clauses) or '0')
-            result = self._page(sql, [str(profile_id), *params], page, page_size)
+            sql = 'FROM (SELECT root,rel,kind,name,0 AS size,NULL AS mtime FROM favorites WHERE profile=?) e WHERE (' + (' OR '.join(clauses) or '0') + ')'
+            result = self._page(sql, [str(profile_id), *params], page, page_size, file_type=file_type)
             result.update(state='ready', refreshing=False, version=None, updated_at=None, error=None)
             return result
 

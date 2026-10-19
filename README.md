@@ -56,6 +56,7 @@ This makes it particularly useful for:
 - Browse ordinary folders directly from a web browser
 - Multiple configurable media roots
 - Server pagination and full-folder filtering/sorting
+- File type filter: All, Videos, Pictures, or Documents (PDFs, comics, and text/Markdown); folders remain visible
 - List/Grid/Details with device preferences and compact video thumbnails
 - Global Unicode filename substring search with path context
 - Profile-scoped persistent video/folder favorites

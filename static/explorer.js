@@ -4,13 +4,16 @@
   if (!explorer) return;
   const items = document.getElementById('explorerItems'), status = document.getElementById('explorerStatus');
   const query = document.getElementById('explorerQuery'), sort = document.getElementById('explorerSort');
+  const fileType = document.getElementById('fileType');
   const scope = document.getElementById('searchScope'), direction = document.getElementById('sortDirection');
   const density = document.getElementById('gridDensity'), previous = document.getElementById('previousPage'), next = document.getElementById('nextPage');
   const csrf = document.querySelector('meta[name="lanstream-csrf"]').content;
   let controller, polling, debounce, sequence = 0, observer, stopped = false, state = {};
   function restore() {
     const params = new URLSearchParams(location.search);
-    state = {page: Number(params.get('page')) || 1, q: params.get('q') || '', sort: params.get('sort') || 'name', direction: params.get('direction') || 'asc', scope: params.get('scope') || 'all', root: params.get('root') || explorer.dataset.root || '0', relative: params.get('relative') || explorer.dataset.relative};
+    state = {page: Number(params.get('page')) || 1, q: params.get('q') || '', sort: params.get('sort') || 'name', direction: params.get('direction') || 'asc', scope: params.get('scope') || 'all', root: params.get('root') || explorer.dataset.root || '0', relative: params.get('relative') || explorer.dataset.relative, file_type: params.get('file_type') || 'all'};
+    fileType.value = state.file_type;
+    if (!fileType.value) fileType.value = state.file_type = 'all';
     if (query) query.value = state.q;
     if (sort) sort.value = state.sort;
     if (scope) scope.value = state.scope;
@@ -111,6 +114,7 @@
   function changed() { state.page = 1; load(); }
   if (query) query.oninput = () => { clearTimeout(debounce); state.q = query.value; debounce = setTimeout(changed, 250); };
   if (sort) sort.onchange = () => { state.sort = sort.value; changed(); };
+  fileType.onchange = () => { state.file_type = fileType.value; changed(); };
   if (scope) scope.onchange = () => { state.scope = scope.value; changed(); };
   if (direction) direction.onclick = () => { state.direction = state.direction === 'asc' ? 'desc' : 'asc'; direction.textContent = state.direction === 'desc' ? 'Descending' : 'Ascending'; changed(); };
   previous.onclick = () => { state.page--; load(); window.scrollTo(0, 0); }; next.onclick = () => { state.page++; load(); window.scrollTo(0, 0); };

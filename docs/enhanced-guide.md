@@ -50,6 +50,11 @@ the last choice and Grid density. List previews are 64 by 40 pixels. Filenames
 wrap and retain their original spelling. Folders sort before files. Name order
 is natural (Clip 2 before Clip 10); date, size and type sorting apply across the
 whole cached directory. Folder filtering also searches the whole directory.
+Use **File type** in Browse, Search or Favorites to choose **All**, **Videos**,
+**Pictures** or **Documents**. Documents include PDFs, CBZ/CBR comics, and
+text/Markdown files. Folders remain visible for navigation. The filter combines
+with filename filtering and applies before pagination; changing it returns to
+page 1. The URL preserves the selection for reloads and Browser Back/Forward.
 Previous/Next replaces a page of at most 100 items, keeping the DOM bounded.
 Browser Back restores the page/query; view switching keeps the same items.
 

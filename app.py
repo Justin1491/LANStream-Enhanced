@@ -25,7 +25,7 @@ from flask import (
 from PIL import Image, ImageOps
 import fitz
 from werkzeug.exceptions import HTTPException
-from directory_index import DirectoryIndex, root_id, _relative
+from directory_index import DirectoryIndex, FILE_TYPE_KINDS, root_id, _relative
 from image_scheduler import ImageScheduler
 
 def application_dir() -> Path:
@@ -1057,11 +1057,14 @@ def explorer_roots():
 
 
 def explorer_page_args():
+    file_type = request.args.get('file_type', 'all')
+    if file_type not in FILE_TYPE_KINDS:
+        abort(400)
     try:
         page = max(1, min(1000000, int(request.args.get('page', '1'))))
     except ValueError:
         abort(400)
-    return dict(page=page, page_size=100)
+    return dict(page=page, page_size=100, file_type=file_type)
 
 
 def explorer_items(result):

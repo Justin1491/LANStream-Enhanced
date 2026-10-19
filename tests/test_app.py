@@ -73,6 +73,69 @@ class ExplorerRoutes(unittest.TestCase):
         self.assertNotIn(str(self.root), str(results))
         self.assertEqual(self.client.get('/api/browse/0/Private').status_code, 404)
 
+    def test_file_type_filter_in_browse_and_search_keeps_folders(self):
+        (self.root / 'Albums').mkdir()
+        for name in ('Photo.png', 'Guide.pdf', 'Story.cbz', 'Archive.cbr', 'Notes.txt', 'Readme.md', 'Ignored.bin'):
+            (self.root / name).touch()
+        (self.root / 'Private' / 'Hidden.png').touch()
+        self.warm()
+        all_names = {'Albums', 'Café Clip 2.mp4', 'Café Clip 10.mp4', 'Photo.png',
+                     'Guide.pdf', 'Story.cbz', 'Archive.cbr', 'Notes.txt', 'Readme.md'}
+        cases = {
+            'all': all_names,
+            'videos': {'Albums', 'Café Clip 2.mp4', 'Café Clip 10.mp4'},
+            'pictures': {'Albums', 'Photo.png'},
+            'documents': {'Albums', 'Guide.pdf', 'Story.cbz', 'Archive.cbr', 'Notes.txt', 'Readme.md'},
+        }
+        for endpoint in ('/api/browse/0/', '/api/search'):
+            for file_type, names in cases.items():
+                with self.subTest(endpoint=endpoint, file_type=file_type):
+                    response = self.client.get(endpoint, query_string={'file_type': file_type})
+                    self.assertEqual(response.status_code, 200)
+                    result = response.get_json()
+                    self.assertEqual({item['name'] for item in result['items']}, names)
+                    self.assertEqual(result['total'], len(names))
+            self.assertEqual(self.client.get(endpoint).get_json()['total'], 9)
+            self.assertEqual(self.client.get(endpoint, query_string={'file_type': 'pictures', 'q': 'Guide'}).get_json()['total'], 0)
+            self.assertEqual(self.client.get(endpoint, query_string={'file_type': 'documents', 'q': 'GUIDE'}).get_json()['items'][0]['name'], 'Guide.pdf')
+
+    def test_file_type_filter_applies_before_pagination_and_sorting(self):
+        for number in range(101):
+            (self.root / f'Notes {number}.txt').touch()
+        for name in ('Photo 2.png', 'Photo 10.png', 'Photo 20.png'):
+            (self.root / name).touch()
+        self.warm()
+        for endpoint in ('/api/browse/0/', '/api/search'):
+            result = self.client.get(endpoint, query_string={'file_type': 'pictures', 'page': 2}).get_json()
+            self.assertEqual((result['total'], result['pages'], result['page']), (3, 1, 1))
+            self.assertEqual([item['name'] for item in result['items']], ['Photo 2.png', 'Photo 10.png', 'Photo 20.png'])
+            result = self.client.get(endpoint, query_string={'file_type': 'documents', 'page': 2}).get_json()
+            self.assertEqual((result['total'], result['pages'], len(result['items'])), (101, 2, 1))
+        result = self.client.get('/api/browse/0/', query_string={'file_type': 'pictures', 'direction': 'desc'}).get_json()
+        self.assertEqual([item['name'] for item in result['items']], ['Photo 20.png', 'Photo 10.png', 'Photo 2.png'])
+
+    def test_file_type_filter_in_favorites_with_multiple_roots(self):
+        other = self.root / 'Other root'
+        other.mkdir()
+        (other / 'Other clip.mp4').touch()
+        self.config.write_text(f'port=8061\n<alice>\n{self.root}\n{other}\n-/Private\n', encoding='utf-8')
+        for root_index, relative, kind in ((0, 'Café Clip 2.mp4', 'video'), (0, 'Other root', 'folder'), (1, 'Other clip.mp4', 'video')):
+            response = self.client.post('/api/favorites', json=dict(root_index=root_index, rel=relative, kind=kind, enabled=True), headers=self.csrf())
+            self.assertEqual(response.status_code, 200)
+        for file_type, names in (('all', {'Other root', 'Café Clip 2.mp4', 'Other clip.mp4'}),
+                                 ('videos', {'Other root', 'Café Clip 2.mp4', 'Other clip.mp4'}),
+                                 ('pictures', {'Other root'}), ('documents', {'Other root'})):
+            with self.subTest(file_type=file_type):
+                result = self.client.get('/api/favorites', query_string={'file_type': file_type}).get_json()
+                self.assertEqual({item['name'] for item in result['items']}, names)
+                self.assertEqual(result['total'], len(names))
+
+    def test_invalid_file_type_is_rejected(self):
+        for endpoint in ('/api/browse/0/', '/api/search', '/api/favorites'):
+            for file_type in ('audio', '', "videos') OR 1=1 --"):
+                with self.subTest(endpoint=endpoint, file_type=file_type):
+                    self.assertEqual(self.client.get(endpoint, query_string={'file_type': file_type}).status_code, 400)
+
     def test_favorite_profile_isolation_csrf_and_missing_source(self):
         self.warm()
         payload = dict(root_index=0, rel='Café Clip 2.mp4', kind='video', enabled=True)
