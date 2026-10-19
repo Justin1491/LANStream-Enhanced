@@ -1,28 +1,45 @@
 # Isolated N100 installer and acceptance checks
 
-Use the installer, release manifest and Windows ZIP distributed together. The
-installer reads the manifest's revision and SHA256, verifies the ZIP before
-extraction, and checks the installed File type filter from the latest version.
-It does not download a different release or depend on Python.
+Copy LANStream-Enhanced-N100-Setup.zip to the N100 and **extract the entire ZIP
+to a local folder**. Open the extracted LANStream-Enhanced-N100-Setup folder
+and double-click **Install Enhanced.cmd** under the Windows account that can
+read the media shares. Keep all six included files together; leave the inner
+application ZIP compressed.
 
-Copy these three files into one folder on the N100:
+The launcher checks the installer SHA256 against the included manifest before
+unblocking that script, then runs it with a process-only RemoteSigned policy.
+The installer verifies the application ZIP before extraction and checks the
+installed File type filter. It does not download a different release or depend
+on Python. No persistent execution policy change is made.
 
-- Install-LANStreamEnhanced.ps1
-- LANStream-Enhanced-Windows-x64-test.zip
-- release-manifest.json
+The included **config.txt** supplies the UNC mappings directly; mapped drive
+letters are unnecessary. Edit its roots and optional `-/Subfolder` exclusions
+before running setup if needed. Keep the single
+`<__LANSTREAM_SETUP_PASSWORD__>` placeholder: setup prompts for a password and
+substitutes it only in the new installation. Settings and exclusions are
+preserved. This creates one Enhanced-only test profile; review household
+permissions before broader use.
 
-Run under the Windows account that can read the media shares. In a PowerShell
-window opened in that folder, run the script with explicitly permitted roots:
+Personal bundle/config outputs belong in Git-ignored artifacts/. The tracked
+source/config.txt remains a generic example. config.n100*.txt and
+config.local.txt are also ignored for private local copies. Never copy personal
+settings into the tracked example or force-add private release files to Git.
+The installed config contains the profile password and must remain private.
+
+For manual PowerShell use with the same template:
+
+```powershell
+.\Install-LANStreamEnhanced.ps1 -ConfigTemplatePath (Join-Path $PWD 'config.txt')
+```
+
+Or supply roots explicitly instead of using a template:
 
 ```powershell
 .\Install-LANStreamEnhanced.ps1 -MediaRoot @('\\NAS\Movies', '\\NAS\Photos')
 ```
 
-It prompts securely for a password and creates one **Enhanced-only test
-profile** that can read those roots. Do not supply a password as plain text on
-the command line. The application requires the password in its local config;
-keep that file private. Existing household profiles/exclusions are a separate
-manual acceptance check before broader use.
+Do not combine ConfigTemplatePath and MediaRoot, or supply a password as plain
+text on the command line. Setup prompts securely in either mode.
 
 If script execution is restricted, open a separate process with a temporary
 policy, then run the command above inside it:
@@ -31,10 +48,10 @@ policy, then run the command above inside it:
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned
 ```
 
-A downloaded unsigned script may also need its Properties > Unblock checkbox
-after reviewing the trusted script. No persistent execution policy change is
-required. The installer creates no service, scheduled task or firewall rule.
-Allow the new executable on Private networks when Windows prompts.
+A downloaded script run manually may need its Properties > Unblock checkbox
+after review; the bundled launcher handles its verified installer. The
+installer creates no service, scheduled task or firewall rule. Allow the new
+executable on Private networks when Windows prompts.
 
 The default destination is C:\LANStream-Enhanced, with an independent config
 and cache on port 8061. Existing destinations and an occupied 8061 are refused;

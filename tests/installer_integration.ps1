@@ -1,6 +1,6 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([switch]$SimulateHardwareSuccess)
+param([switch]$SimulateHardwareSuccess, [switch]$UseConfigTemplate)
 $ErrorActionPreference = 'Stop'
 $base = Split-Path $PSScriptRoot -Parent
 . (Join-Path $base 'scripts\Install-LANStreamEnhanced.ps1')
@@ -74,8 +74,18 @@ try {
     }
     $password = New-Object Security.SecureString
     foreach ($character in 'Fictional integration profile 123'.ToCharArray()) { $password.AppendChar($character) }
-    $exitCode = Invoke-LanStreamInstaller -ZipPath (Join-Path $base 'artifacts\LANStream-Enhanced-Windows-x64-test.zip') -ManifestPath (Join-Path $base 'artifacts\release-manifest.json') -InstallDirectory $target -MediaRoot @($media) -Password $password
+    $inputOptions = @{ MediaRoot = @($media) }
+    if ($UseConfigTemplate) {
+        $templatePath = Join-Path $work 'config-template.txt'
+        $templateText = "port=8061`r`nuse_master_password=false`r`nmaster_password=`r`ntranscoder=auto`r`nlow_bandwidth_resolution=1280x720`r`nlow_bandwidth_bitrate=3M`r`n<__LANSTREAM_SETUP_PASSWORD__>`r`n$media`r`n-/Private`r`n"
+        [IO.File]::WriteAllText($templatePath, $templateText, (New-Object Text.UTF8Encoding $false))
+        $inputOptions = @{ ConfigTemplatePath = $templatePath }
+    }
+    $exitCode = Invoke-LanStreamInstaller -ZipPath (Join-Path $base 'artifacts\LANStream-Enhanced-Windows-x64-test.zip') -ManifestPath (Join-Path $base 'artifacts\release-manifest.json') -InstallDirectory $target -Password $password @inputOptions
     $report = [IO.File]::ReadAllText((Join-Path $target 'acceptance-report.json')) | ConvertFrom-Json
+    if ($UseConfigTemplate -and [IO.File]::ReadAllText((Join-Path $target 'config.txt')) -cne $templateText.Replace('__LANSTREAM_SETUP_PASSWORD__', 'Fictional integration profile 123')) {
+        throw 'Installed config did not preserve template settings, mapping, exclusions and prompted password.'
+    }
     foreach ($key in $keys) {
         if ([Environment]::GetEnvironmentVariable($key, 'Process') -cne $expected[$key]) { throw ('Caller environment was not restored: ' + $key) }
     }
@@ -95,7 +105,7 @@ try {
         if (-not $failed.Count -or @($failed | Where-Object { $_.name -notmatch 'QSV|Intel backend' }).Count) { throw 'An acceptance check other than the expected local QSV failure failed.' }
     }
     elseif ($exitCode -ne 0 -or -not $own) { throw 'Real successful acceptance returned inconsistent process state.' }
-    $result = [ordered]@{ mode=$mode; installer_exit_code=$exitCode; installer_status=$report.status; unrelated_process_preserved=$true; inherited_environment_restored=$true; process_cleanup_verified=$true; checks=@($report.checks).Count; hardware_simulated=[bool]$SimulateHardwareSuccess }
+    $result = [ordered]@{ mode=$mode; installer_exit_code=$exitCode; installer_status=$report.status; unrelated_process_preserved=$true; inherited_environment_restored=$true; process_cleanup_verified=$true; checks=@($report.checks).Count; hardware_simulated=[bool]$SimulateHardwareSuccess; config_template_verified=[bool]$UseConfigTemplate }
     [IO.File]::WriteAllText((Join-Path $work 'integration-result.json'), ($result | ConvertTo-Json))
     Write-Host ($result | ConvertTo-Json -Compress)
 }

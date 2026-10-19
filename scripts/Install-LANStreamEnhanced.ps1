@@ -6,7 +6,8 @@ param(
     [string[]]$MediaRoot,
     [Security.SecureString]$Password,
     [string]$SampleVideo,
-    [string]$ManifestPath
+    [string]$ManifestPath,
+    [string]$ConfigTemplatePath
 )
 
 function Test-LanStreamPathWithin {
@@ -20,7 +21,7 @@ function Test-LanStreamPathWithin {
 function Get-LanStreamAbsolutePath {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path) -or $Path -ne $Path.Trim() -or
-        $Path -match '[\x00-\x1f<>|"=]' -or $Path -match '^\\\\[?.]\\' -or
+        $Path -match '[\x00-\x1f\x85\u2028\u2029<>|"=]' -or $Path -match '^\\\\[?.]\\' -or
         $Path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))') {
         throw 'Supply an absolute local or UNC path without config control characters.'
     }
@@ -88,6 +89,63 @@ namespace LanStreamInstaller {
         return Get-LanStreamAbsolutePath $physical
     }
     finally { $handle.Dispose() }
+}
+
+function Read-LanStreamConfigTemplate {
+    param([string]$Path)
+    $file = Get-LanStreamAbsolutePath $Path
+    if (Test-LanStreamPathWithin $file 'C:\LANStream') { throw 'The existing LANStream configuration is protected.' }
+    Assert-LanStreamNoReparsePoint $file
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw 'Config template was not found.' }
+    $physical = Get-LanStreamPhysicalPath $file
+    if ($physical -notmatch '^[A-Za-z]:\\' -or (Test-LanStreamPathWithin $physical (Get-LanStreamPhysicalPath 'C:\LANStream'))) {
+        throw 'Config template must resolve to a local file outside the existing LANStream installation.'
+    }
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($file)).TrimStart([char]0xfeff)
+    $token = '__LANSTREAM_SETUP_PASSWORD__'
+    if ([regex]::Matches($text, [regex]::Escape($token)).Count -ne 1 -or $text -match '[\x00-\x08\x0b\x0c\x0e-\x1f\x85\u2028\u2029]') {
+        throw 'Config template must contain exactly one setup-password token and no unsupported control characters.'
+    }
+    $settings = @{}
+    $roots = @()
+    $profile = $false
+    $known = @('port', 'use_master_password', 'master_password', 'transcoder', 'directory_cache_ttl', 'directory_scan_timeout', 'thumbnail_workers', 'low_bandwidth_resolution', 'low_bandwidth_bitrate')
+    foreach ($raw in ($text -split '\r\n|\n|\r')) {
+        $line = $raw.Trim()
+        if (-not $line -or $line.StartsWith('#')) { continue }
+        if ($line.StartsWith('<') -or $line.EndsWith('>')) {
+            if ($profile -or $line -cne ('<' + $token + '>')) { throw 'Config template must have exactly one setup-password profile.' }
+            $profile = $true
+        }
+        elseif ($line.StartsWith('-/')) {
+            if (-not $profile -or $roots.Count -eq 0 -or $line.Length -le 2) { throw 'A template exclusion must follow a media root.' }
+        }
+        elseif ($line.Contains('=')) {
+            if ($profile) { throw 'All template settings must appear before the password profile.' }
+            $key, $value = $line -split '=', 2
+            $key = $key.Trim().ToLowerInvariant()
+            $value = $value.Trim()
+            if ($known -notcontains $key -or $settings.ContainsKey($key)) { throw 'Config template has an unsupported or duplicate setting.' }
+            if ($key -in @('directory_cache_ttl', 'directory_scan_timeout', 'thumbnail_workers')) {
+                $number = 0
+                $maximum = @{ directory_cache_ttl = 86400; directory_scan_timeout = 300; thumbnail_workers = 8 }[$key]
+                if (-not [int]::TryParse($value, [ref]$number) -or $number -lt 1 -or $number -gt $maximum) { throw 'A template worker or directory timing setting is outside its supported range.' }
+            }
+            if (($key -eq 'low_bandwidth_resolution' -and $value -notmatch '^[1-9]\d*x[1-9]\d*$') -or
+                ($key -eq 'low_bandwidth_bitrate' -and $value -notmatch '^[1-9]\d*(?:\.\d+)?[kKmM]?$')) { throw 'A template Low Bandwidth setting has an invalid format.' }
+            $settings[$key] = $value
+        }
+        else {
+            if (-not $profile) { throw 'Template media roots must follow the password profile.' }
+            $roots += Get-LanStreamAbsolutePath $line
+        }
+    }
+    if (-not $profile -or $roots.Count -eq 0 -or $settings['port'] -ne '8061' -or
+        $settings['use_master_password'] -ne 'false' -or -not $settings.ContainsKey('master_password') -or
+        $settings['master_password'] -ne '' -or $settings['transcoder'] -ne 'auto') {
+        throw 'Config template requires media roots, port=8061, use_master_password=false, empty master_password, and transcoder=auto.'
+    }
+    return [pscustomobject]@{ Text = $text; MediaRoot = $roots }
 }
 
 function Assert-LanStreamInstallPaths {
@@ -305,7 +363,7 @@ function Assert-LanStreamListing {
 function Invoke-LanStreamInstaller {
     [CmdletBinding()]
     param([string]$ZipPath, [string]$InstallDirectory = 'C:\LANStream-Enhanced', [string[]]$MediaRoot,
-        [Security.SecureString]$Password, [string]$SampleVideo, [string]$ManifestPath)
+        [Security.SecureString]$Password, [string]$SampleVideo, [string]$ManifestPath, [string]$ConfigTemplatePath)
     $ErrorActionPreference = 'Stop'
     $stage = $null
     $installed = $false
@@ -321,6 +379,12 @@ function Invoke-LanStreamInstaller {
         Write-Host ($Status + ': ' + $Name)
     }
     try {
+        $template = $null
+        if ($ConfigTemplatePath) {
+            if ($PSBoundParameters.ContainsKey('MediaRoot')) { throw 'Use ConfigTemplatePath or MediaRoot, not both.' }
+            $template = Read-LanStreamConfigTemplate $ConfigTemplatePath
+            $MediaRoot = $template.MediaRoot
+        }
         $paths = Assert-LanStreamInstallPaths -InstallDirectory $InstallDirectory -MediaRoot $MediaRoot -SampleVideo $SampleVideo
         $InstallDirectory = $paths.InstallDirectory
         $MediaRoot = $paths.MediaRoot
@@ -355,7 +419,7 @@ function Invoke-LanStreamInstaller {
         $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
         try { $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
         finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
-        if ([string]::IsNullOrWhiteSpace($plain) -or $plain -ne $plain.Trim() -or $plain -match '[\x00-\x1f<>]') {
+        if ([string]::IsNullOrWhiteSpace($plain) -or $plain -ne $plain.Trim() -or $plain -match '[\x00-\x1f\x85\u2028\u2029<>]') {
             throw 'Password must be nonempty and have no outer whitespace, line breaks, control characters, or angle brackets.'
         }
         $parent = [IO.Path]::GetDirectoryName($InstallDirectory)
@@ -376,6 +440,7 @@ function Invoke-LanStreamInstaller {
         [IO.Directory]::CreateDirectory($logs) | Out-Null
         [IO.Directory]::CreateDirectory((Join-Path $InstallDirectory 'cache')) | Out-Null
         $config = "# Isolated Enhanced acceptance profile. Private: contains password and media paths.`r`nport=8061`r`nuse_master_password=false`r`nmaster_password=`r`ntranscoder=auto`r`ndirectory_cache_ttl=300`r`ndirectory_scan_timeout=30`r`nthumbnail_workers=1`r`nlow_bandwidth_resolution=854x480`r`nlow_bandwidth_bitrate=2M`r`n`r`n<" + $plain + ">`r`n" + ($MediaRoot -join "`r`n") + "`r`n"
+        if ($template) { $config = $template.Text.Replace('__LANSTREAM_SETUP_PASSWORD__', $plain) }
         [IO.File]::WriteAllText((Join-Path $InstallDirectory 'config.txt'), $config, (New-Object Text.UTF8Encoding $false))
         $config = $null
         foreach ($tool in @('ffmpeg', 'ffprobe', '7z')) {

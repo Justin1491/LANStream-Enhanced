@@ -8,5 +8,6 @@ artifacts/
 benchmark-results/
 *.log
 config.local.txt
+config.n100*.txt
 tools/*.exe
 tools/*.dll

@@ -2,11 +2,11 @@
   "date": "2026-10-18",
   "platform": "Development Windows; Windows PowerShell 5.1",
   "combined_python_tests": {
-    "tests": 72,
+    "tests": 82,
     "skipped": 0,
-    "passed": 72
+    "passed": 82
   },
-  "installer_guardrail_tests": 13,
+  "installer_guardrail_tests": 18,
   "latest_app_file_type_filters": "Desktop/mobile actual executable passed",
   "real_local_integration": {
     "mode": "real-hardware",
@@ -35,5 +35,23 @@
     "remaining_findings": 0,
     "effort": "high",
     "model": "gpt-6.1-sol"
+  },
+  "bundle_tests": 5,
+  "template_installation_integration": {
+    "mode": "simulated-hardware",
+    "installer_exit_code": 0,
+    "installer_status": "PASS",
+    "unrelated_process_preserved": true,
+    "inherited_environment_restored": true,
+    "process_cleanup_verified": true,
+    "checks": 17,
+    "hardware_simulated": true,
+    "config_template_verified": true
+  },
+  "private_config": {
+    "ignored_artifact_output": true,
+    "tracked_example_unchanged": true,
+    "personal_mappings_in_tracked_files": false,
+    "personal_mappings_in_git_history": false
   }
 }

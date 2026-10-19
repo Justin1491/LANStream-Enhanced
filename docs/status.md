@@ -65,16 +65,23 @@ numbers of requests and must not be interpreted as equivalent workloads.
   snapshots, interrupted publication, Unicode/natural ordering, exclusions,
   traversal, profile isolation, persistent favorites/crawls, corruption/schema
   refusal and thumbnail replacement/priority/backoff cases.
-- Windows PowerShell 5.1 installer guardrails: **13 tests passed** for protected
+- Windows PowerShell 5.1 installer guardrails: **18 tests passed** for protected
   paths, existing installs, junctions, unsafe ZIPs, SHA256/manifest mismatches,
-  occupied port 8061, bounded tool shutdown and latency statistics. No test
+  occupied port 8061, bounded tool shutdown, template preservation/validation,
+  password line separators and latency statistics. No test
   writes production data or controls its process.
-- Combined suite: **72 tests passed, no skips**. Actual ZIP installation,
+- N100 setup bundle: **5 tests passed**, including matching payload/config hashes,
+  rejection of modified installers, and the actual CMD launcher in a folder
+  containing spaces, an ampersand and Unicode. Personal mappings are generated
+  only in ignored release artifacts; the tracked config remains generic.
+- Combined suite: **82 tests passed, no skips**. Actual ZIP installation,
   authenticated HTTP checks, inherited environment isolation and preservation
   of an unrelated LANStream process passed locally. Local QSV failure correctly
   fails acceptance and stops only the installer-owned server. The keep-running
   success branch was tested with QSV results explicitly simulated, not counted
-  as N100 hardware acceptance. See [installer evidence](n100-installer-local.json).
+  as N100 hardware acceptance. The mapped-template path also passed actual
+  executable installation/login, preserving settings and exclusions while
+  substituting the prompted password. See [installer evidence](n100-installer-local.json).
 - Added **14 non-video viewer regressions** and exercised the source server and
   rebuilt portable executable in Chrome at 1440x1000 and 390x844. PNG/JPEG/TIFF,
   PDF, CBZ, genuine CBR through 7-Zip, UTF-8 text and Markdown passed navigation,

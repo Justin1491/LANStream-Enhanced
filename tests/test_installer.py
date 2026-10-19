@@ -70,7 +70,8 @@ class InstallerSafety(unittest.TestCase):
         self.assertEqual(list(self.target.iterdir()), [marker])
 
     def test_drive_roots_relative_paths_and_config_injection_are_rejected(self):
-        for target in ('C:\\', 'relative/install', str(self.target) + '\nport=8060'):
+        for target in ('C:\\', 'relative/install', str(self.target) + '\nport=8060',
+                       str(self.target) + '\u2028Other'):
             with self.subTest(target=target):
                 result = self.run_ps("try { " + self.paths(target) + "; exit 3 } catch { exit 0 }")
                 self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
@@ -129,17 +130,28 @@ class InstallerSafety(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
         self.assertEqual(float(result.stdout.strip()), 19)
 
-    def installer(self, digest=None, archive_name='release.zip'):
+    def installer(self, digest=None, archive_name='release.zip', password='FictionalTestPassword'):
         archive = self.work / 'release.zip'
         with zipfile.ZipFile(archive, 'w') as package:
             package.writestr('LANStream-Enhanced/config.txt', 'port=8061')
+            for name in ('LANStream.exe', 'ffmpeg.exe', 'ffprobe.exe', '7z.exe', '7z.dll', '_internal/fixture'):
+                package.writestr('LANStream-Enhanced/' + name, b'Fictional package component')
         manifest = self.work / 'release-manifest.json'
         manifest.write_text(json.dumps(dict(archive=archive_name,
                             sha256=digest or hashlib.sha256(archive.read_bytes()).hexdigest(),
                             revision='fictional-installer-test')), encoding='utf-8')
         return ('Invoke-LanStreamInstaller -ZipPath ' + literal(archive)
                 + ' -ManifestPath ' + literal(manifest) + ' -InstallDirectory ' + literal(self.target)
-                + ' -MediaRoot @(' + literal(self.media) + ") -Password (ConvertTo-SecureString 'FictionalTestPassword' -AsPlainText -Force)")
+                + ' -MediaRoot @(' + literal(self.media) + ') -Password (ConvertTo-SecureString '
+                + literal(password) + ' -AsPlainText -Force)')
+
+    def test_password_line_separators_cannot_create_a_broken_profile(self):
+        for separator in ('\x85', '\u2028', '\u2029'):
+            with self.subTest(separator=repr(separator)):
+                result = self.run_ps('exit (' + self.installer(password='Fictional' + separator + 'password') + ')')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(b'Password must', result.stdout + result.stderr)
+                self.assertFalse(self.target.exists())
 
     def test_hash_mismatch_cannot_install(self):
         result = self.run_ps('exit (' + self.installer(digest='0' * 64) + ')')
@@ -178,6 +190,51 @@ class InstallerSafety(unittest.TestCase):
         self.assertTrue(data['TimedOut'])
         self.assertLess(data['Seconds'], 10)
         self.assertTrue(prefix.with_suffix('.stdout.txt').is_file())
+
+    def template(self):
+        return ('# Fictional settings\r\nport=8061\r\nuse_master_password=false\r\n'
+                'master_password=\r\ntranscoder=auto\r\nthumbnail_workers=1\r\n'
+                'low_bandwidth_resolution=1280x720\r\nlow_bandwidth_bitrate=3M\r\n'
+                '<__LANSTREAM_SETUP_PASSWORD__>\r\n' + str(self.media) + '\r\n-/Private\r\n')
+
+    def test_template_preserves_mapping_settings_and_exclusions(self):
+        path = self.work / 'config-template.txt'
+        text = self.template()
+        path.write_bytes(text.encode('utf-8'))
+        result = self.run_ps('Read-LanStreamConfigTemplate -Path ' + literal(path) + ' | ConvertTo-Json -Compress')
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        data = json.loads(result.stdout.decode('utf-8-sig'))
+        self.assertEqual(data['Text'], text)
+        self.assertEqual(data['MediaRoot'], [str(self.media)])
+        self.assertEqual(data['Text'].count('__LANSTREAM_SETUP_PASSWORD__'), 1)
+
+    def test_template_rejects_wrong_port_extra_profiles_and_settings_injection(self):
+        for text in (self.template().replace('port=8061', 'port=8060'),
+                     self.template() + '<another-password>\r\nC:\\Other\r\n',
+                     self.template().replace('port=8061', 'port=8061\r\nport=8061'),
+                     self.template().replace('<__LANSTREAM_SETUP_PASSWORD__>', str(self.media) + '\r\n<__LANSTREAM_SETUP_PASSWORD__>'),
+                     self.template() + 'port=8060\r\n',
+                     self.template().replace('transcoder=auto', 'transcoder=software')):
+            with self.subTest(text=text[:70]):
+                path = self.work / 'invalid-config.txt'
+                path.write_bytes(text.encode('utf-8'))
+                self.assert_rejected('Read-LanStreamConfigTemplate -Path ' + literal(path), 'template')
+
+    def test_template_removes_utf8_bom_without_changing_settings(self):
+        path = self.work / 'bom-config.txt'
+        text = self.template()
+        path.write_bytes(text.encode('utf-8-sig'))
+        result = self.run_ps('(Read-LanStreamConfigTemplate -Path ' + literal(path) + ').Text | ConvertTo-Json -Compress')
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        self.assertEqual(json.loads(result.stdout.decode('utf-8-sig')), text)
+
+    def test_template_and_media_root_cannot_be_combined(self):
+        path = self.work / 'config-template.txt'
+        path.write_bytes(self.template().encode('utf-8'))
+        result = self.run_ps('exit (' + self.installer() + ' -ConfigTemplatePath ' + literal(path) + ')')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'not both', (result.stdout + result.stderr).lower())
+        self.assertFalse(self.target.exists())
 
 
 if __name__ == '__main__':
