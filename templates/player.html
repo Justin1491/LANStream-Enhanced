@@ -31,6 +31,7 @@
 <div class="quality-mode" role="radiogroup" aria-label="Stream quality">
 <label><input type="radio" name="qualityMode" value="normal" checked> Normal</label>
 <label><input type="radio" name="qualityMode" value="low"> Low Bandwidth</label>
+{% if hevc %}<label title="Keep original H.265 video; requires HEVC browser support"><input type="radio" name="qualityMode" value="hevc"> H.265</label>{% endif %}
 </div>
 {% if audios %}<select id="audioSelect" title="Audio" aria-label="Audio track">{% for a in audios %}
 <option value="{{ a.index }}">{{ a.language }} · {{ a.codec }}{% if a.title %} · {{ a.title }}{% endif %}</option>
@@ -59,10 +60,10 @@ const playerShell=document.getElementById("playerShell"),
 const nativeUrl={{ url_for('media_file',root_index=root_index,relpath=relpath)|tojson }};
 const transcodeBase={{ url_for('transcode',root_index=root_index,relpath=relpath)|tojson }};
 const subtitleBase={{ url_for('subtitle',root_index=root_index,relpath=relpath)|tojson }};
-let logicalOffset=0,started=false,dragging=false,lowBandwidth=false,controlsTimer=null;
+let logicalOffset=0,started=false,dragging=false,lowBandwidth=false,hevcCopy=false,controlsTimer=null;
 
 function fmt(sec){sec=Math.max(0,Math.floor(sec||0));const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h?`${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${m}:${String(s).padStart(2,"0")}`;}
-function usingDirect(){return nativePlayback&&!lowBandwidth;}
+function usingDirect(){return nativePlayback&&!lowBandwidth&&!hevcCopy;}
 function logicalTime(){return usingDirect()?(video.currentTime||0):logicalOffset+(video.currentTime||0);}
 function audio(){return audioSelect?audioSelect.value:"";}
 function msg(t){message.textContent=t;message.classList.toggle("hidden",!t);}
@@ -74,8 +75,8 @@ function subtitles(start){
  t.src=subtitleBase+"?stream="+encodeURIComponent(subtitleSelect.value)+"&start="+encodeURIComponent(start);video.appendChild(t);
 }
 function transcode(at){
- logicalOffset=Math.max(0,Math.min(totalDuration,at));subtitles(logicalOffset);msg("Starting transcoded stream…");
- video.src=transcodeBase+"?start="+encodeURIComponent(logicalOffset)+"&audio="+encodeURIComponent(audio())+(lowBandwidth?"&low=1":"");
+ logicalOffset=Math.max(0,Math.min(totalDuration,at));subtitles(logicalOffset);msg(hevcCopy?"Starting H.265 stream…":"Starting transcoded stream…");
+ video.src=transcodeBase+"?start="+encodeURIComponent(logicalOffset)+"&audio="+encodeURIComponent(audio())+(lowBandwidth?"&low=1":"")+(hevcCopy?"&hevc=1":"");
  video.load();video.play().catch(playbackRejected);
 }
 function start(at=0){
@@ -126,7 +127,7 @@ forward30.onclick=()=>{showControls();go(logicalTime()+30);};
 video.addEventListener("playing",()=>{msg("");togglePlay.textContent="Pause";scheduleControlsHide();});
 video.addEventListener("pause",()=>{togglePlay.textContent="Play";showControls();clearControlsTimer();});
 video.addEventListener("waiting",()=>{if(started&&!video.paused)msg("Buffering…");});
-video.addEventListener("error",()=>{const e=video.error;msg("Playback failed"+(e?` (browser error ${e.code})`:"")+". Check /transcoder-status and the LANStream container log.");});
+video.addEventListener("error",()=>{const e=video.error;msg("Playback failed"+(e?` (browser error ${e.code})`:"")+(hevcCopy?". Try Normal if this browser cannot play H.265":"")+". Check /transcoder-status and the LANStream container log.");});
 seek.oninput=()=>{dragging=true;showControls();currentLabel.textContent=fmt(Number(seek.value));};
 seek.onchange=()=>{dragging=false;go(Number(seek.value));scheduleControlsHide();};
 video.addEventListener("timeupdate",()=>{if(dragging)return;const t=Math.min(totalDuration,logicalTime());seek.value=t;currentLabel.textContent=fmt(t);});
@@ -136,8 +137,8 @@ fullscreenTop.onclick=toggleFullscreen;
 document.querySelectorAll('input[name="qualityMode"]').forEach(radio=>{
  radio.addEventListener("change",()=>{
   showControls();if(!radio.checked)return;
-  const wantLow=radio.value==="low";if(wantLow===lowBandwidth)return;
-  const t=logicalTime();lowBandwidth=wantLow;started=false;logicalOffset=0;start(t);
+  const wantLow=radio.value==="low",wantHevc=radio.value==="hevc";if(wantLow===lowBandwidth&&wantHevc===hevcCopy)return;
+  const t=logicalTime();lowBandwidth=wantLow;hevcCopy=wantHevc;started=false;logicalOffset=0;start(t);
  });
 });
 if(audioSelect)audioSelect.onchange=()=>{showControls();if(started&&!usingDirect())go(logicalTime());};

@@ -44,6 +44,19 @@ root/profile changes apply to later requests. Environment variables for config,
 cache, port, session secret and transcoder remain supported. Do not share logs
 or config files containing passwords or private media paths.
 
+## Try H.265 playback
+
+For HEVC/H.265 sources, including Media Optimizer MKV output, select **H.265**
+in the player to keep the original video and repackage it into an MP4 stream
+tagged hvc1. The selected audio is converted to stereo AAC. No video encoder
+is needed, and the source file is never changed. This mode requires an HEVC
+capable browser/device; use **Normal** if playback fails. It preserves the
+original video bitrate, resolution and HDR characteristics; it does not tone map
+HDR for SDR displays. Seeking lands near keyframes, keeping audio and video
+together; use Normal for precise seeking. **Low Bandwidth** continues to encode H.264 at the
+configured size and bitrate. H.265 still uses the existing streamed MP4 delivery;
+iPhone acceptance and the reported Safari error require a real-device check.
+
 ## Browse, search and favorites
 
 Choose List, Grid or Details. Mobile defaults to List; the device remembers
@@ -71,7 +84,7 @@ until Windows returns; the UI and cached responses remain available.
 Search matches case-insensitive **filename substrings**, including Unicode,
 across visited/indexed directories. Results show the root label and complete
 relative containing-folder path, plus Open folder. Use All indexed roots,
-Current subtree or Current folder. Search from here carries the current folder.
+Current subtree or Current folder.
 Search is partial until discovery finishes. Counts show cached coverage, never
 an invented percentage; offline results can be stale.
 
@@ -113,8 +126,12 @@ and therefore starts a new Favorites set for that profile.
 
 Visible/near-visible items request thumbnails automatically. Existing local thumbs and
 posters are reused. The browser requests cached images directly and only polls
-for readiness when an image is missing. Folder and search updates keep already
-loaded thumbnails for unchanged files, so new results do not reload those images.
+for readiness when an image is missing. Automatic folder and search updates keep
+loaded thumbnails and pending downloads for unchanged files, so new results do
+not restart that work. Transient download failures retry even after generation finishes.
+Individual thumbnail downloads and readiness requests time out after ten seconds
+so an unavailable file cannot hold up the remaining thumbnails. Large pictures are
+reduced before orientation processing to limit decoding and memory overhead.
 At most two previews load at once; navigation cancels pending browser requests.
 The queue holds at most 64 pending/active jobs, uses two
 workers by default (`thumbnail_workers=1` selects one), prioritizes visible/detail work and
@@ -126,7 +143,8 @@ old queued work. Legacy cached images use file timestamps after restart; if a
 replacement deliberately preserves its old timestamp, remove its old cached
 image manually. Video candidates use one FFmpeg invocation to check blackness
 and extract the JPEG. Readiness checks start at 250 ms, then back off to 1.5
-seconds for slower jobs and stop after 90 seconds; revisiting retries them.
+seconds for slower jobs and stop after 90 seconds from the first download attempt;
+waiting for a browser request slot does not use that budget. Revisiting retries them.
 
 To prepare thumbnails before browsing, open a folder and click **Prepare
 thumbnails**. This covers supported videos, pictures, PDFs and comics in the

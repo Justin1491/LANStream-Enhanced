@@ -23,16 +23,17 @@ function player(direct = true) {
       setAttribute(name, value) { this[name] = value; },
     });
   }
+  const qualityModes = ['normal', 'low', 'hevc'].map(value => Object.assign(new EventTarget(), {value, checked:false}));
   const document = Object.assign(new EventTarget(), {
     getElementById: id => elements[id] || null,
-    querySelectorAll: () => [],
+    querySelectorAll: () => qualityModes,
   });
   Object.assign(elements.video, {readyState:1, querySelectorAll:() => [], load() {}});
   const window = Object.assign(new EventTarget(), {setTimeout, clearTimeout});
   const context = vm.createContext({document, window});
   vm.runInContext(script.replace('{{ "true" if native else "false" }}', String(direct))
     .replace('{{ duration }}', '60').replace(/{{.*?}}/g, '"/fixture"'), context);
-  return {document, window, ...elements};
+  return {document, window, qualityModes, ...elements};
 }
 
 test('iPhone Safari enters and exits native video fullscreen and updates the button', async () => {
@@ -154,4 +155,23 @@ test('paused video does not report buffering and media failures retain their err
   p.video.dispatchEvent(new Event('error'));
   p.video.dispatchEvent(new Event('waiting'));
   assert.match(p.playerMessage.textContent, /Playback failed \(browser error 4\)/);
+});
+
+test('HEVC selection survives seeking and switches back to low bandwidth', () => {
+  const p = player(false);
+  p.video.play = () => Promise.resolve();
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  p.video.currentTime = 12;
+  const hevc = p.qualityModes.find(radio => radio.value === 'hevc');
+  hevc.checked = true;
+  hevc.dispatchEvent(new Event('change'));
+  assert.match(p.video.src, /start=12&audio=&hevc=1$/);
+  p.video.currentTime = 3;
+  p.forward30.onclick();
+  assert.match(p.video.src, /start=45&audio=&hevc=1$/);
+  const low = p.qualityModes.find(radio => radio.value === 'low');
+  low.checked = true;
+  low.dispatchEvent(new Event('change'));
+  assert.match(p.video.src, /&low=1$/);
+  assert.doesNotMatch(p.video.src, /hevc=1/);
 });

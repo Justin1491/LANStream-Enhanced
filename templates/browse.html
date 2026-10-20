@@ -5,7 +5,7 @@
 <a class="back-link" href="{{ up_url }}">← {{ 'Up one level' if mode == 'browse' else 'Media roots' }}</a>
 <nav class="crumbs" aria-label="Folder path">{% for crumb in crumbs %}<a href="{{ crumb.url }}">{{ crumb.name }}</a>{% if not loop.last %}<span>/</span>{% endif %}{% endfor %}</nav>
 <section id="explorer" data-api="{{ api_url }}" data-mode="{{ mode }}" data-root="{{ root_index if root_index is not none else '' }}" data-relative="{{ relpath }}" data-automatic-indexing="{{ 'true' if automatic_indexing else 'false' }}">
-<div class="explorer-heading"><h1>{{ 'Favorites' if mode == 'favorites' else 'Search filenames' if mode == 'search' else crumbs[-1].name }}</h1>{% if mode == 'browse' %}<a href="/search?root={{ root_index }}&amp;relative={{ relpath|urlencode }}">Search from here</a>{% endif %}</div>
+<div class="explorer-heading"><h1>{{ 'Favorites' if mode == 'favorites' else 'Search filenames' if mode == 'search' else crumbs[-1].name }}</h1></div>
 <div class="explorer-toolbar">
 {% if mode != 'favorites' %}<label class="explorer-query">{{ 'Filename contains' if mode == 'search' else 'Filter entire folder' }}<input id="explorerQuery" type="search" autocomplete="off" maxlength="500" placeholder="Any part of a filename"></label>{% endif %}
 <label>File type<select id="fileType"><option value="all">All</option><option value="videos">Videos</option><option value="pictures">Pictures</option><option value="documents">Documents</option></select></label>
@@ -15,7 +15,7 @@
 <label id="densityControl">Grid size<input id="gridDensity" type="range" min="140" max="280" step="20" value="180"></label>
 </div>
 <p id="explorerStatus" role="status" aria-live="polite">Loading cached directory…</p><p id="coverage" class="muted"></p>
-{% if mode == 'browse' %}<p class="muted">Optional: prepare thumbnails for this entire folder, including later pages. Subfolders are excluded. Preparation pauses during playback.</p><p id="thumbnailStatus" class="muted" role="status" aria-live="polite"></p>{% endif %}
+{% if mode == 'browse' %}<p id="thumbnailStatus" class="muted" role="status" aria-live="polite"></p>{% endif %}
 <div class="details-heading" aria-hidden="true"><span>Name</span><span>Size</span><span>Modified</span><span>Type</span></div>
 <div id="explorerItems" class="explorer-items" aria-label="Media items"></div>
 <div class="pagination"><button id="previousPage" type="button" disabled>← Previous</button><span id="pageLabel"></span><button id="nextPage" type="button" disabled>Next →</button></div>

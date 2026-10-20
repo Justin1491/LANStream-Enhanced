@@ -9,7 +9,12 @@
   const density = document.getElementById('gridDensity'), previous = document.getElementById('previousPage'), next = document.getElementById('nextPage');
   const csrf = document.querySelector('meta[name="lanstream-csrf"]').content;
   let controller, polling, debounce, sequence = 0, observer, stopped = false, state = {};
-  let thumbnailImages = new Map();
+  let thumbnailImages = new Map(), thumbnailWork;
+  function resetThumbnails() {
+    if (thumbnailWork) thumbnailWork.controller.abort();
+    thumbnailWork = {controller: new AbortController(), queue: [], active: 0, started: new WeakSet()};
+    thumbnailImages = new Map([...thumbnailImages].filter(([, image]) => image.complete && image.naturalWidth));
+  }
   function restore() {
     const params = new URLSearchParams(location.search);
     state = {page: Number(params.get('page')) || 1, q: params.get('q') || '', sort: params.get('sort') || 'name', direction: params.get('direction') || 'asc', scope: params.get('scope') || 'all', root: params.get('root') || explorer.dataset.root || '0', relative: params.get('relative') || explorer.dataset.relative, file_type: params.get('file_type') || 'all'};
@@ -56,27 +61,31 @@
   }
   function render(result) {
     if (state.page !== result.page) {
+      resetThumbnails();
       state.page = result.page;
       history.replaceState(null, '', location.pathname + '?' + new URLSearchParams(state));
     }
     if (observer) observer.disconnect();
-    const signal = controller.signal, thumbnails = [];
-    let activeThumbnails = 0;
+    const work = thumbnailWork, signal = work.controller.signal, thumbnails = work.queue;
     function drainThumbnails() {
       // Leave connections free for paging while slow shares serve thumbnails.
-      while (!signal.aborted && activeThumbnails < 2 && thumbnails.length) {
-        activeThumbnails++;
-        thumbnails.shift()().finally(() => { activeThumbnails--; drainThumbnails(); });
+      while (!signal.aborted && work.active < 2 && thumbnails.length) {
+        work.active++;
+        thumbnails.shift()().finally(() => { work.active--; drainThumbnails(); });
       }
     }
     observer = new IntersectionObserver(entries => entries.forEach(entry => {
       if (!entry.isIntersecting) return;
       observer.unobserve(entry.target);
-      const image = entry.target.querySelector('img'), deadline = Date.now() + 90000; let attempts = 0, retry;
+      const image = entry.target.querySelector('img'); let deadline, attempts = 0, retry;
+      if (!image || work.started.has(image)) return;
+      work.started.add(image);
       signal.addEventListener('abort', () => clearTimeout(retry), {once: true});
       const loadImage = () => new Promise(resolve => {
-        if (stopped || signal.aborted || !image.isConnected) { resolve(false); return; }
+        if (stopped || signal.aborted || !image.isConnected || Date.now() >= deadline) { resolve(false); return; }
+        let timeout;
         const done = event => {
+          clearTimeout(timeout);
           image.removeEventListener('load', done); image.removeEventListener('error', done);
           signal.removeEventListener('abort', cancel);
           const loaded = event?.type === 'load';
@@ -87,25 +96,27 @@
         const cancel = () => done();
         image.addEventListener('load', done, {once: true}); image.addEventListener('error', done, {once: true});
         signal.addEventListener('abort', cancel, {once: true});
-        image.src = image.dataset.src + '?v=' + encodeURIComponent(result.version || 'cached');
+        timeout = setTimeout(cancel, Math.min(10000, deadline - Date.now()));
+        image.src = image.dataset.src + '?v=' + encodeURIComponent(image.dataset.version);
       });
       const check = async () => {
-        if (stopped || signal.aborted || !image.isConnected) return;
+        if (stopped || signal.aborted || !image.isConnected || Date.now() >= deadline) return;
+        const requestController = new AbortController(), cancel = () => requestController.abort();
+        signal.addEventListener('abort', cancel, {once: true});
+        const timeout = setTimeout(cancel, Math.min(10000, deadline - Date.now()));
         try {
-          const response = await fetch(image.dataset.ready, {cache: 'no-store', signal});
+          const response = await fetch(image.dataset.ready, {cache: 'no-store', signal: requestController.signal});
           if (!response.ok) return;
           const ready = await response.json();
           if (signal.aborted || !image.isConnected) return;
-          if (ready.ready) {
-            await loadImage();
-            return;
-          }
+          if (ready.ready && await loadImage()) return;
           if (ready.failed) return;
         } catch (_) { /* Revisit to retry unavailable thumbnails. */ }
+        finally { clearTimeout(timeout); signal.removeEventListener('abort', cancel); }
         if (!signal.aborted && Date.now() < deadline) retry = setTimeout(() => { thumbnails.push(check); drainThumbnails(); }, Math.min(1500, 250 * 2 ** Math.floor(++attempts / 4)));
       };
       // Cached images need one request; only missing images need generation polling.
-      thumbnails.push(async () => { if (!await loadImage()) await check(); }); drainThumbnails();
+      thumbnails.push(async () => { deadline = Date.now() + 90000; if (!await loadImage()) await check(); }); drainThumbnails();
     }), {rootMargin: '160px 0px'});
     const fragment = document.createDocumentFragment(), nextImages = new Map();
     for (const item of result.items) {
@@ -115,11 +126,12 @@
       if (item.thumb_url) {
         const key = JSON.stringify([item.thumb_url, item.mtime, item.size]);
         let image = thumbnailImages.get(key);
-        if (!image?.complete || !image.naturalWidth) {
+        if (!image) {
           image = element('img'); image.alt = ''; image.hidden = true;
           image.dataset.src = item.thumb_url; image.dataset.ready = item.ready_url;
-          observer.observe(preview);
+          image.dataset.version = result.version || 'cached';
         }
+        if (!image.complete || !image.naturalWidth) observer.observe(preview);
         preview.append(image); nextImages.set(key, image);
       }
       const label = element('span', 'item-label'); label.append(element('span', 'item-name', item.name));
@@ -144,10 +156,11 @@
     previous.disabled = state.page <= 1; next.disabled = state.page >= result.pages;
     document.getElementById('pageLabel').textContent = 'Page ' + state.page + ' of ' + Math.max(1, result.pages);
     document.getElementById('coverage').textContent = result.coverage ? result.coverage.map(root => root.folders + ' cached folders / ' + root.items.toLocaleString() + ' items').join(' · ') + ' · Partial coverage until recursive indexing completes; offline results may be stale.' : '';
-    if (scanning || result.refreshing) polling = setTimeout(() => load(false), 1500);
+    if (scanning || result.refreshing) polling = setTimeout(() => load(false, true), 1500);
   }
-  async function load(historyUpdate = true) {
+  async function load(historyUpdate = true, background = false) {
     clearTimeout(polling); if (controller) controller.abort(); controller = new AbortController(); const current = ++sequence;
+    if (!background) resetThumbnails();
     const params = new URLSearchParams(state); if (historyUpdate) history.pushState(null, '', location.pathname + '?' + params);
     status.textContent = 'Loading cached results…';
     try { const response = await fetch(explorer.dataset.api + '?' + params, {signal: controller.signal, cache: 'no-store'});
@@ -211,7 +224,7 @@
     prepare.onclick = () => preparationStatus('start'); stop.onclick = () => preparationStatus('stop'); preparationStatus();
   }
   window.addEventListener('popstate', () => { restore(); load(false); });
-  window.addEventListener('pagehide', () => { stopped = true; clearTimeout(polling); clearTimeout(indexPoll); clearTimeout(thumbnailPoll); clearTimeout(debounce); if (controller) controller.abort(); if (observer) observer.disconnect(); });
+  window.addEventListener('pagehide', () => { stopped = true; clearTimeout(polling); clearTimeout(indexPoll); clearTimeout(thumbnailPoll); clearTimeout(debounce); if (controller) controller.abort(); if (thumbnailWork) thumbnailWork.controller.abort(); if (observer) observer.disconnect(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { stopped = false; restore(); load(false); if (prepare) preparationStatus(); if (document.getElementById('startIndex')) indexStatus(); } });
   restore(); load(false);
 })();

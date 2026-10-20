@@ -13,7 +13,7 @@
 {% for root in roots %}
 <a class="folder-card filter-item" data-filter-name="{{ root.label|lower }}" href="{{ url_for('browse', root_index=root.index) }}">
 <div class="folder-icon"></div>
-<div><strong>{{ root.label }}</strong><small>Open cached folder browser</small></div>
+<div><strong>{{ root.label }}</strong></div>
 </a>
 {% endfor %}
 </div>

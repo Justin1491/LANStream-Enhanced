@@ -1,5 +1,6 @@
 """Video thumbnail checks use isolated fictional media and mocked FFmpeg."""
 import os
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -113,6 +114,71 @@ class ThumbnailExtractionTests(unittest.TestCase):
         self.generate(run)
         self.assertFalse(self.output.exists())
         self.assertFalse(self.tmp.exists())
+
+    def test_large_jpeg_is_reduced_before_orientation_processing(self):
+        image = self.server.Image.new('RGB', (4000, 3000), 'red')
+        data = io.BytesIO()
+        image.save(data, 'JPEG')
+        image.close()
+        transpose = self.server.ImageOps.exif_transpose
+        sizes = []
+        def record(image):
+            sizes.append(image.size)
+            return transpose(image)
+        with self.server.Image.open(io.BytesIO(data.getvalue())) as image, \
+             patch.object(self.server.ImageOps, 'exif_transpose', side_effect=record):
+            self.server._save_pillow_jpeg(image, self.output, 360)
+        self.assertTrue(all(width <= 360 and height <= 720 for width, height in sizes), sizes)
+        with self.server.Image.open(self.output) as image:
+            self.assertEqual(image.size, (360, 270))
+
+    def test_thumbnail_preserves_all_exif_orientations_and_bounds(self):
+        colors = ['red', 'green', 'yellow', 'blue', 'red', 'blue', 'yellow', 'green']
+        for orientation, color in enumerate(colors, 1):
+            with self.subTest(orientation=orientation):
+                image = self.server.Image.new('RGB', (1200, 600), 'red')
+                image.paste('green', (600, 0, 1200, 300))
+                image.paste('blue', (0, 300, 600, 600))
+                image.paste('yellow', (600, 300, 1200, 600))
+                image.getexif()[274] = orientation
+                self.server._save_pillow_jpeg(image, self.output, 360)
+                image.close()
+                with self.server.Image.open(self.output) as result:
+                    self.assertEqual(result.size, (360, 180) if orientation < 5 else (360, 720))
+                    self.assertNotIn(274, result.getexif())
+                    expected = self.server.Image.new('RGB', (1, 1), color).getpixel((0, 0))
+                    actual = result.getpixel((20, 20))
+                    self.assertLess(max(abs(a - b) for a, b in zip(actual, expected)), 10)
+
+    def test_encoded_rotated_images_preserve_dimensions_and_orientation(self):
+        for format in ('JPEG', 'PNG', 'TIFF'):
+            for size, expected in [((1200, 600), (360, 720)), ((600, 1200), (360, 180))]:
+                with self.subTest(format=format, size=size):
+                    image = self.server.Image.new('RGB', size, 'red')
+                    image.paste('blue', (0, size[1] // 2, *size))
+                    exif = image.getexif()
+                    exif[274] = 6
+                    data = io.BytesIO()
+                    image.save(data, format, exif=exif)
+                    image.close()
+                    with self.server.Image.open(io.BytesIO(data.getvalue())) as source:
+                        self.server._save_pillow_jpeg(source, self.output, 360)
+                    with self.server.Image.open(self.output) as result:
+                        self.assertEqual(result.size, expected)
+                        self.assertGreater(result.getpixel((20, 20))[2], 240)
+                        self.assertGreater(result.getpixel((340, 20))[0], 240)
+
+    def test_thumbnail_preserves_transparency_background_and_grayscale(self):
+        for mode, color, expected in [('RGBA', (255, 0, 0, 0), (0, 0, 0)),
+                                      ('L', 128, (128, 128, 128))]:
+            with self.subTest(mode=mode):
+                image = self.server.Image.new(mode, (40, 60), color)
+                self.server._save_pillow_jpeg(image, self.output, 360)
+                image.close()
+                with self.server.Image.open(self.output) as result:
+                    self.assertEqual(result.size, (40, 60))
+                    self.assertEqual(result.mode, 'RGB')
+                    self.assertEqual(result.getpixel((20, 20)), expected)
 
     def test_bundled_ffmpeg_skips_real_black_frame_and_extracts_red_frame(self):
         ffmpeg = Path(__file__).resolve().parents[1] / 'tools' / 'ffmpeg.exe'

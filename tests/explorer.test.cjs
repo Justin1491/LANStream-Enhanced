@@ -10,6 +10,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function explorer(automaticIndexing, resultOverrides = {}) {
   const images = [], checks = [], observers = [], timers = new Map();
+  let now = 0, timerSequence = 0;
   class Element extends EventTarget {
     constructor(tag) {
       super();
@@ -20,7 +21,12 @@ function explorer(automaticIndexing, resultOverrides = {}) {
       this.classList = {toggle() {}};
       this.isConnected = true;
     }
-    append(...children) { this.children.push(...children); }
+    append(...children) {
+      for (const child of children) {
+        if (child.parent) child.parent.children = child.parent.children.filter(node => node !== child);
+        child.parent = this; this.children.push(child);
+      }
+    }
     replaceChildren(fragment) { this.children = fragment.children; }
     setAttribute(name, value) { this[name] = value; }
     removeAttribute(name) { delete this[name]; }
@@ -55,8 +61,12 @@ function explorer(automaticIndexing, resultOverrides = {}) {
     },
     window, location, history:{pushState:navigate, replaceState:navigate},
     localStorage:{getItem:() => null, setItem() {}}, matchMedia:() => ({matches:false}),
-    URLSearchParams, AbortController,
-    setTimeout: callback => { const id = timers.size + 1; timers.set(id, callback); return id; },
+    URLSearchParams, AbortController, Date: class extends Date { static now() { return now; } },
+    setTimeout: (callback, delay) => {
+      const id = ++timerSequence;
+      const run = () => { timers.delete(id); callback(); };
+      run.at = now + delay; timers.set(id, run); return id;
+    },
     clearTimeout: id => timers.delete(id),
     IntersectionObserver: class {
       constructor(callback) { this.callback = callback; this.targets = []; observers.push(this); }
@@ -79,6 +89,15 @@ function explorer(automaticIndexing, resultOverrides = {}) {
     },
   });
   return {elements, images, checks, observers, timers, window,
+    async advance(milliseconds) {
+      const end = now + milliseconds;
+      while (true) {
+        const next = [...timers.values()].filter(run => run.at <= end).sort((a, b) => a.at - b.at)[0];
+        if (!next) break;
+        now = next.at; next(); await flush();
+      }
+      now = end; await flush();
+    },
     intersect() { const observer = observers.at(-1); observer.callback(observer.targets.map(target => ({target, isIntersecting:true}))); },
   };
 }
@@ -137,7 +156,7 @@ test('navigation cancels image downloads and scheduled thumbnail retries', async
   e.checks[1].respond(false);
   await flush();
   assert.ok(e.images[0].src);
-  assert.equal(e.timers.size, 1);
+  assert.equal(e.timers.size, 4); // Download/readiness timeouts plus the pending retry.
   e.elements.nextPage.onclick();
   await flush();
   assert.equal(e.images[0].src, undefined);
@@ -156,7 +175,7 @@ test('missing thumbnails appear after generation and stop polling', async () => 
   assert.equal(e.images[0].hidden, true, 'failed images must keep the placeholder');
   e.checks[0].respond(false);
   await flush();
-  assert.equal(e.timers.size, 1);
+  assert.equal(e.timers.size, 3); // Two active downloads and one generation retry.
   e.images[1].dispatchEvent(new Event('load'));
   e.images[2].dispatchEvent(new Event('load'));
   await flush();
@@ -187,15 +206,97 @@ test('search refresh keeps loaded images while adding matches, but reloads chang
   const first = e.images[0];
   rows.push({...rows[0], name:'Second', thumb_url:'/thumbnail/second', ready_url:'/ready/second'});
   result.version = 'second';
-  [...e.timers.values()][0]();
+  await e.advance(1500);
   await flush(); e.intersect();
   assert.equal(e.images.length, 2, 'loaded images must be reused when new results arrive');
   assert.equal(e.elements.explorerItems.children[0].children[0].children[0].children[0], first);
   assert.equal(first.hidden, false);
   assert.equal(first.src, '/thumbnail/first?v=first', 'a directory version change must not reload unchanged media');
   rows[0].mtime = 2;
-  [...e.timers.values()].at(-1)();
+  await e.advance(1500);
   await flush();
   assert.notEqual(e.elements.explorerItems.children[0].children[0].children[0].children[0], first,
     'changed source metadata must invalidate a loaded image');
+});
+
+test('background refresh preserves pending downloads and generation checks without exceeding two slots', async () => {
+  const rows = [{name:'First', kind:'image', url:'/image', size:10, mtime:1, thumb_url:'/thumbnail/first', ready_url:'/ready/first'}];
+  const result = {items:rows, refreshing:true, version:'first'};
+  const e = explorer(undefined, result);
+  await flush(); e.intersect();
+  const first = e.images[0];
+  const oldObserver = e.observers.at(-1), oldPreview = oldObserver.targets[0];
+  await e.advance(1500); e.intersect();
+  assert.equal(e.images.length, 1, 'background refresh must reuse unfinished images');
+  assert.ok(first.src, 'an in-flight download must survive refresh');
+  assert.doesNotThrow(() => oldObserver.callback([{target:oldPreview, isIntersecting:true}]),
+    'late observer entries must tolerate images moved by refresh');
+  first.dispatchEvent(new Event('error')); await flush();
+  const check = e.checks[0];
+  rows.push(...Array.from({length:3}, (_, i) => ({...rows[0], name:`New ${i}`, thumb_url:`/thumbnail/new/${i}`, ready_url:`/ready/new/${i}`})));
+  await e.advance(1500); e.intersect();
+  assert.equal(check.signal.aborted, false, 'generation checks must survive refresh');
+  assert.equal(e.images.filter(image => image.src && !image.complete).length, 1,
+    'an active check leaves only one download slot across refreshes');
+  check.respond(true); await flush();
+  first.dispatchEvent(new Event('load')); await flush();
+  assert.equal(first.hidden, false);
+  e.elements.nextPage.onclick(); await flush();
+  assert.ok(e.images.slice(1).every(image => !image.src), 'navigation must still cancel unfinished downloads');
+  e.window.dispatchEvent(new Event('pagehide'));
+});
+
+test('a ready thumbnail retries a transient download failure until it loads', async () => {
+  const e = explorer(undefined, {items:[{name:'First', kind:'image', url:'/image', size:10, thumb_url:'/thumbnail/first', ready_url:'/ready/first'}]});
+  await flush(); e.intersect();
+  e.images[0].dispatchEvent(new Event('error')); await flush();
+  e.checks[0].respond(true); await flush();
+  e.images[0].dispatchEvent(new Event('error')); await flush();
+  await e.advance(1500);
+  assert.equal(e.checks.length, 2, 'a failed download must retry even when generation is complete');
+  e.checks[1].respond(true); await flush();
+  e.images[0].dispatchEvent(new Event('load')); await flush();
+  assert.equal(e.images[0].hidden, false);
+  assert.equal(e.timers.size, 0);
+});
+
+test('stalled image downloads and readiness checks release thumbnail slots', async () => {
+  const e = explorer();
+  await flush(); e.intersect();
+  await e.advance(10000);
+  assert.ok(e.images.slice(0, 2).every(image => !image.src), 'timed out downloads must be cancelled');
+  assert.equal(e.checks.length, 2);
+  await e.advance(10000);
+  assert.ok(e.checks.every(check => check.signal.aborted), 'stalled readiness requests must be cancelled');
+  assert.ok(e.images[2].src && e.images[3].src, 'remaining thumbnails must get a turn');
+  e.elements.nextPage.onclick(); await flush();
+  assert.equal(e.elements.pageLabel.textContent, 'Page 2 of 3');
+  e.window.dispatchEvent(new Event('pagehide'));
+  assert.equal(e.timers.size, 0, 'navigation must clear request timeouts and retries');
+});
+
+test('thumbnail retries stop at the deadline even when every request stalls', async () => {
+  const e = explorer();
+  await flush(); e.intersect();
+  await e.advance(240000);
+  const checks = e.checks.length;
+  assert.ok(checks > 0);
+  assert.ok(e.images.every(image => !image.src));
+  assert.ok(e.checks.every(check => check.signal.aborted));
+  assert.equal(e.timers.size, 0);
+  await e.advance(120000);
+  assert.equal(e.checks.length, checks);
+});
+
+test('thumbnails waiting behind slow downloads get their own retry budget', async () => {
+  const e = explorer(undefined, {items:Array.from({length:12}, (_, i) => ({
+    name:`Clip ${i}`, kind:'video', url:'/video', size:10,
+    thumb_url:`/thumbnail/${i}`, ready_url:`/ready/${i}`,
+  }))});
+  await flush(); e.intersect();
+  await e.advance(100000);
+  assert.ok(e.images[10].src && e.images[11].src,
+    'queue wait time must not expire thumbnails before their first download');
+  e.window.dispatchEvent(new Event('pagehide'));
+  assert.equal(e.timers.size, 0);
 });

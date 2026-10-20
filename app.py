@@ -570,8 +570,14 @@ def screenshot_candidates(info: dict[str, Any]) -> list[float]:
 
 
 def _save_pillow_jpeg(image: Image.Image, output: Path, width: int) -> None:
+    if image.format == "TIFF":
+        image.load()  # TIFF applies EXIF orientation during decoding.
+    bounds = (width, max(width * 2, 240))
+    if image.getexif().get(274) in {5, 6, 7, 8}:
+        bounds = bounds[::-1]
+    # Resize while JPEG decoder reduction is still available, before EXIF loads/copies it.
+    image.thumbnail(bounds, Image.Resampling.LANCZOS)
     image = ImageOps.exif_transpose(image)
-    image.thumbnail((width, max(width * 2, 240)), Image.Resampling.LANCZOS)
     if image.mode not in {"RGB", "L"}:
         background = Image.new("RGB", image.size, "black")
         if "A" in image.getbands():
@@ -1480,13 +1486,14 @@ def player(root_index, relpath):
     if not is_video(source):
         abort(404)
     info = probe(source)
-    _, audios, subtitles = stream_lists(info)
+    videos, audios, subtitles = stream_lists(info)
     d = duration_seconds(info)
     return render_template(
         "player.html", root_index=root_index, relpath=relpath,
         filename=source.name, duration=d, duration_text=fmt_duration(d),
         audios=audios, subtitles=subtitles,
         native=direct_playback_ok(source, info, audios),
+        hevc=bool(videos and videos[0]["codec"] == "hevc"),
     )
 
 
@@ -1755,7 +1762,10 @@ def transcode_command(
 ) -> list[str]:
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "error"]
 
-    if backend == "vaapi":
+    if backend == "hevc-copy":
+        # shortcut: copy seeks land on nearby keyframes; use Normal for precise seeking.
+        cmd += ["-noaccurate_seek"]
+    elif backend == "vaapi":
         cmd += ["-vaapi_device", VAAPI_DEVICE]
 
     cmd += [
@@ -1769,7 +1779,11 @@ def transcode_command(
     else:
         cmd += ["-an"]
 
-    if backend == "vaapi":
+    if backend == "hevc-copy":
+        if low:
+            raise ValueError("HEVC video copy cannot resize or reduce the video bitrate")
+        cmd += ["-c:v", "copy", "-tag:v", "hvc1"]
+    elif backend == "vaapi":
         cmd += [
             "-vf", "format=nv12,hwupload",
             "-c:v", "h264_vaapi",
@@ -1861,7 +1875,15 @@ def transcode(root_index, relpath):
     if not is_video(source):
         abort(404)
 
-    transcoder = selected_transcoder()
+    if request.args.get("hevc") == "1":
+        if request.args.get("low") == "1":
+            abort(400, description="Choose H.265 or Low Bandwidth, not both")
+        videos, _, _ = stream_lists(probe(source))
+        if not videos or videos[0]["codec"] != "hevc":
+            abort(400, description="H.265 playback requires an HEVC source")
+        transcoder = {"key": "hevc-copy", "label": "H.265 video copy", "ok": True}
+    else:
+        transcoder = selected_transcoder()
     if not transcoder["ok"]:
         app.logger.error("No usable transcoder: %s", transcoder["detail"])
         return Response(
@@ -1940,7 +1962,7 @@ def transcode(root_index, relpath):
                 )
 
     response = Response(stream_with_context(generate()))
-    response.headers["Content-Type"] = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'
+    response.headers["Content-Type"] = "video/mp4"
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Accel-Buffering"] = "no"
     return response

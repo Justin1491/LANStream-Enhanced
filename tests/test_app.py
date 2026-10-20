@@ -202,6 +202,49 @@ class ExplorerRoutes(unittest.TestCase):
         self.assertEqual(command[command.index('-ss') + 1], '12.500')
         self.assertIn('0:2', command)
 
+    def test_hevc_copy_command_preserves_video_and_rejects_scaling(self):
+        command = self.server.transcode_command('hevc-copy', self.root / 'clip.mkv', 2, 12.5)
+        self.assertEqual(command[command.index('-c:v') + 1], 'copy')
+        self.assertEqual(command[command.index('-tag:v') + 1], 'hvc1')
+        self.assertEqual(command[command.index('-ss') + 1], '12.500')
+        self.assertIn('0:2', command)
+        self.assertIn('aac', command)
+        self.assertIn('-noaccurate_seek', command)
+        self.assertNotIn('-vf', command)
+        with self.assertRaises(ValueError):
+            self.server.transcode_command('hevc-copy', self.root / 'clip.mkv', 2, 0, low=True)
+
+    def test_hevc_playback_validates_source_and_bypasses_hardware_encoder(self):
+        import io
+        from unittest.mock import MagicMock
+        (self.root / 'clip.mkv').touch()
+        info = {'streams': [
+            {'index': 0, 'codec_type': 'video', 'codec_name': 'hevc'},
+            {'index': 1, 'codec_type': 'audio', 'codec_name': 'aac'},
+        ], 'format': {'duration': '60'}}
+        proc = MagicMock()
+        proc.stdout = io.BytesIO(b'fixture-mp4')
+        proc.stderr = io.BytesIO()
+        proc.poll.return_value = 0
+        proc.returncode = 0
+        with patch.object(self.server, 'probe', return_value=info), \
+                patch.object(self.server, 'selected_transcoder', side_effect=AssertionError('HEVC copy must not select an encoder')), \
+                patch.object(self.server.subprocess, 'Popen', return_value=proc) as popen:
+            page = self.client.get('/play/0/clip.mkv')
+            self.assertIn(b'value="hevc"', page.data)
+            response = self.client.get('/transcode/0/clip.mkv?hevc=1&audio=1&start=12.5')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.content_type, 'video/mp4')
+            self.assertEqual(response.data, b'fixture-mp4')
+            response.close()
+            self.assertIn('hvc1', popen.call_args.args[0])
+            popen.reset_mock()
+            self.assertEqual(self.client.get('/transcode/0/clip.mkv?hevc=1&low=1').status_code, 400)
+            info['streams'][0]['codec_name'] = 'h264'
+            self.assertNotIn(b'value="hevc"', self.client.get('/play/0/clip.mkv').data)
+            self.assertEqual(self.client.get('/transcode/0/clip.mkv?hevc=1').status_code, 400)
+            popen.assert_not_called()
+
     def test_low_bandwidth_command_uses_configured_bitrate_and_safe_scale(self):
         command = self.server.transcode_command('qsv', self.root / 'Café Clip 2.mp4', 0, 0, low=True)
         self.assertIn('2M', command)
