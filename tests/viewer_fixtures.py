@@ -6,7 +6,7 @@ import struct
 import zipfile
 import zlib
 
-import fitz
+import pymupdf
 from PIL import Image, ImageDraw
 
 
@@ -55,7 +55,7 @@ def create_viewer_fixtures(root: Path) -> dict:
     (root / paths['image_first']).write_bytes(_picture('firebrick', 'IMAGE 1'))
     (root / paths['image_next']).write_bytes(_picture('forestgreen', 'IMAGE 2', (360, 220), 'JPEG'))
     (root / paths['image_tiff']).write_bytes(_picture('navy', 'TIFF IMAGE 3', format='TIFF'))
-    with fitz.open() as document:
+    with pymupdf.open() as document:
         for index, (width, height, color) in enumerate([
             (300, 440, (0.7, 0.1, 0.1)), (460, 280, (0.1, 0.6, 0.1)),
             (320, 460, (0.1, 0.1, 0.7)),

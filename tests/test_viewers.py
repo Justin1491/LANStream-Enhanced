@@ -12,7 +12,7 @@ from unittest.mock import patch
 from urllib.parse import quote
 import zipfile
 
-import fitz
+import pymupdf
 from PIL import Image
 
 from viewer_fixtures import create_viewer_fixtures
@@ -173,7 +173,7 @@ class ViewerRoutes(unittest.TestCase):
                 source = self.root / self.files[key]
                 if key == 'pdf':
                     replacement = source.with_suffix('.replacement.pdf')
-                    with fitz.open() as document:
+                    with pymupdf.open() as document:
                         page = document.new_page(width=200, height=250)
                         page.draw_rect(page.rect, color=(1, 1, 0), fill=(1, 1, 0))
                         document.save(replacement)

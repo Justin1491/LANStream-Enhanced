@@ -23,7 +23,7 @@ from flask import (
     send_file, session, stream_with_context, url_for, make_response,
 )
 from PIL import Image, ImageOps
-import fitz
+import pymupdf
 from werkzeug.exceptions import HTTPException
 from directory_index import DirectoryIndex, FILE_TYPE_KINDS, root_id, _relative
 from image_scheduler import ImageScheduler
@@ -704,12 +704,12 @@ def _generate_nonvideo_thumbnail(source: Path, output: Path, width: int) -> bool
             _save_pillow_jpeg(image, output, width)
         return True
     if kind == "pdf":
-        with VIEWER_RENDER_LOCK, fitz.open(source) as document:
+        with VIEWER_RENDER_LOCK, pymupdf.open(source) as document:
             if document.page_count < 1:
                 return False
             page = document.load_page(0)
             scale = max(1.0, width / max(1.0, page.rect.width))
-            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
             with Image.open(io.BytesIO(pix.tobytes("png"))) as image:
                 _save_pillow_jpeg(image, output, width)
         return True
@@ -1330,12 +1330,12 @@ def _render_pdf_page(source: Path, page: int, output: Path, width: int = 1600) -
     output.parent.mkdir(parents=True, exist_ok=True)
     tmp = output.with_suffix(".tmp.jpg")
     try:
-        with fitz.open(source) as document:
+        with pymupdf.open(source) as document:
             if page < 0 or page >= document.page_count:
                 raise IndexError(page)
             p = document.load_page(page)
             scale = max(1.0, width / max(1.0, p.rect.width))
-            pix = p.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            pix = p.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
             pix.save(str(tmp))
         tmp.replace(output)
     finally:
@@ -1366,11 +1366,11 @@ def document_viewer(root_index, relpath):
         abort(503, description="CBR viewing requires 7-Zip. Install 7-Zip or place its executable beside LANStream.")
     try:
         if kind == "pdf":
-            with VIEWER_RENDER_LOCK, fitz.open(source) as document:
+            with VIEWER_RENDER_LOCK, pymupdf.open(source) as document:
                 page_count = document.page_count
         else:
             page_count = len(_comic_names(source))
-    except (zipfile.BadZipFile, fitz.FileDataError, RuntimeError, ValueError):
+    except (zipfile.BadZipFile, pymupdf.FileDataError, RuntimeError, ValueError):
         return render_template("error.html", message="Unable to open this document. It may be damaged or unsupported."), 415
     except Exception:
         app.logger.exception("Document open failed")
@@ -1413,7 +1413,7 @@ def document_page(root_index, relpath):
                     _render_comic_page(source, page, output)
             except IndexError:
                 abort(404)
-            except (zipfile.BadZipFile, fitz.FileDataError, RuntimeError, ValueError, Image.UnidentifiedImageError):
+            except (zipfile.BadZipFile, pymupdf.FileDataError, RuntimeError, ValueError, Image.UnidentifiedImageError):
                 abort(415, description="Unable to read this page. The document may be damaged or unsupported.")
             except Exception as exc:
                 app.logger.warning("Document page render failed for %s page %s: %s", source, page, exc)
