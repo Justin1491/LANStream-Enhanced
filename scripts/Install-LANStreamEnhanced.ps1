@@ -7,7 +7,8 @@ param(
     [Security.SecureString]$Password,
     [string]$SampleVideo,
     [string]$ManifestPath,
-    [string]$ConfigTemplatePath
+    [string]$ConfigTemplatePath,
+    [switch]$Upgrade
 )
 
 function Test-LanStreamPathWithin {
@@ -361,10 +362,289 @@ function Assert-LanStreamListing {
     if ($Listing.state -ne 'ready' -or $Listing.refreshing) { throw 'Listing is still loading or refreshing; it cannot be a warm sample.' }
 }
 
+function Assert-LanStreamUpgradeTree {
+    param([string]$Path)
+    Assert-LanStreamNoReparsePoint $Path
+    $pending = New-Object 'Collections.Generic.Stack[string]'
+    $pending.Push($Path)
+    while ($pending.Count) {
+        $directory = $pending.Pop()
+        Assert-LanStreamNoReparsePoint $directory
+        foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Upgrade refuses reparse points anywhere in the existing or staged install.' }
+            if ($item.PSIsContainer) { $pending.Push($item.FullName) }
+        }
+    }
+}
+
+function Assert-LanStreamUpgradePaths {
+    param([string]$InstallDirectory)
+    $target = Get-LanStreamAbsolutePath $InstallDirectory
+    if ((Test-LanStreamPathWithin $target 'C:\LANStream') -or (Test-LanStreamPathWithin 'C:\LANStream' $target)) { throw 'The existing LANStream installation is protected.' }
+    if ($target -notmatch '^[A-Za-z]:\\' -or [IO.Path]::GetPathRoot($target) -eq $target) { throw 'Upgrade requires a local directory below a drive root.' }
+    Assert-LanStreamNoReparsePoint $target
+    if (-not (Test-Path -LiteralPath $target -PathType Container)) { throw 'Upgrade requires an existing Enhanced installation.' }
+    $physical = Get-LanStreamPhysicalPath $target
+    $production = Get-LanStreamPhysicalPath 'C:\LANStream'
+    if ($physical -notmatch '^[A-Za-z]:\\' -or (Test-LanStreamPathWithin $physical $production) -or (Test-LanStreamPathWithin $production $physical)) { throw 'The existing LANStream installation is protected; upgrade must resolve to a separate local directory.' }
+    Assert-LanStreamUpgradeTree $target
+    foreach ($marker in @('LANStream.exe', 'ffmpeg.exe', 'ffprobe.exe', '7z.exe', '7z.dll', 'config.txt', 'cache\index.sqlite3')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $target $marker) -PathType Leaf)) { throw 'Existing Enhanced install is missing a required executable, config, or cache marker.' }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $target '_internal') -PathType Container) -or
+        -not @(Get-ChildItem -LiteralPath (Join-Path $target '_internal') -Force).Count) { throw 'Existing Enhanced runtime marker is missing.' }
+    $configFile = Join-Path $target 'config.txt'
+    $cache = Join-Path $target 'cache'
+    foreach ($pair in @(@('LANSTREAM_CONFIG_FILE', $configFile), @('LANSTREAM_CACHE_DIR', $cache))) {
+        $override = [Environment]::GetEnvironmentVariable($pair[0], 'Process')
+        if ($override -and (Get-LanStreamAbsolutePath $override) -ine $pair[1]) { throw 'Upgrade refuses an external config/cache environment override. Run from an environment using this installation.' }
+    }
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($configFile)).TrimStart([char]0xfeff)
+    $ports = @([regex]::Matches($text, '(?im)^\s*port\s*=\s*([^\r\n]*)'))
+    if ($ports.Count -ne 1 -or $ports[0].Groups[1].Value.Trim() -ne '8061') { throw 'Upgrade supports existing Enhanced config port=8061 only; no settings were changed.' }
+    $settings = @{ master_password = ''; use_master_password = 'false'; transcoder = 'auto'; port = '8061' }
+    foreach ($setting in [regex]::Matches($text, '(?im)^\s*(master_password|use_master_password|transcoder|port)\s*=\s*([^\r\n]*)')) {
+        $settings[$setting.Groups[1].Value.ToLowerInvariant()] = $setting.Groups[2].Value.Trim()
+    }
+    foreach ($pair in @(@('LANSTREAM_PASSWORD', 'master_password'), @('LANSTREAM_USE_MASTER_PASSWORD', 'use_master_password'), @('LANSTREAM_TRANSCODER', 'transcoder'), @('LANSTREAM_PORT', 'port'))) {
+        $override = [Environment]::GetEnvironmentVariable($pair[0], 'Process')
+        if (-not $override) { continue }
+        $configured = $settings[$pair[1]]
+        if ($pair[1] -eq 'use_master_password') {
+            $different = ($override.Trim().ToLowerInvariant() -in @('1', 'true', 'yes', 'on')) -ne ($configured.ToLowerInvariant() -in @('1', 'true', 'yes', 'on'))
+        }
+        elseif ($pair[1] -eq 'master_password') { $different = $override -cne $configured }
+        else { $different = $override.Trim() -ine $configured }
+        if ($override -and $different) { throw 'Upgrade refuses differing credential, transcoder, or port environment overrides; existing configuration and server were not changed.' }
+    }
+    $roots = @()
+    foreach ($raw in ($text -split '\r\n|\n|\r')) {
+        $line = $raw.Trim()
+        if (-not $line -or $line.StartsWith('#') -or $line.StartsWith('<') -or $line.StartsWith('-') -or $line.Contains('=')) { continue }
+        $root = Get-LanStreamAbsolutePath $line
+        if ((Test-LanStreamPathWithin $root $target) -or (Test-LanStreamPathWithin $target $root) -or
+            (Test-LanStreamPathWithin $root 'C:\LANStream') -or (Test-LanStreamPathWithin 'C:\LANStream' $root)) { throw 'An existing media root overlaps the Enhanced or protected installation.' }
+        # Offline remote libraries need not be contacted to preserve an existing installation.
+        if ($root -match '^[A-Za-z]:\\') {
+            Assert-LanStreamNoReparsePoint $root
+            $physicalRoot = Get-LanStreamPhysicalPath $root
+            if ((Test-LanStreamPathWithin $physicalRoot $physical) -or (Test-LanStreamPathWithin $physical $physicalRoot) -or
+                (Test-LanStreamPathWithin $physicalRoot $production) -or (Test-LanStreamPathWithin $production $physicalRoot)) { throw 'An existing media root physically overlaps an installation.' }
+        }
+        $roots += $root
+    }
+    if (-not $roots.Count) { throw 'Existing Enhanced config must contain a media root.' }
+    return $target
+}
+
+function Get-LanStreamUpgradeMutexName {
+    param([string]$InstallDirectory)
+    $target = Get-LanStreamAbsolutePath $InstallDirectory
+    if ($target -notmatch '^[A-Za-z]:\\') { throw 'Upgrade requires a local installation directory.' }
+    $physical = (Get-LanStreamPhysicalPath $target).ToUpperInvariant()
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { return 'Global\LANStreamEnhancedUpgrade-' + [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($physical))).Replace('-', '') }
+    finally { $hasher.Dispose() }
+}
+
+function Get-LanStreamUpgradeProcesses {
+    param([string]$InstallDirectory)
+    $executable = Join-Path $InstallDirectory 'LANStream.exe'
+    return @(Get-Process | Where-Object { try { $_.Path -and $_.Path.Equals($executable, [StringComparison]::OrdinalIgnoreCase) } catch { $false } })
+}
+
+function Assert-LanStreamUpgradePort {
+    param([Diagnostics.Process[]]$OwnedProcesses)
+    $ids = @($OwnedProcesses | ForEach-Object { $_.Id })
+    $listeners = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners())
+    foreach ($port in @(8060, 8061)) {
+        if (@($listeners | Where-Object { $_.Port -eq $port }).Count) {
+            $connections = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop)
+            if (($port -eq 8060 -and @($connections | Where-Object { $ids -contains $_.OwningProcess }).Count) -or
+                ($port -eq 8061 -and @($connections | Where-Object { $ids -notcontains $_.OwningProcess }).Count)) { throw 'Port 8061 is already in use by an unrelated process, or the target owns protected port 8060. No unrelated process was stopped.' }
+        }
+    }
+}
+
+function Stop-LanStreamUpgradeProcess {
+    param([Diagnostics.Process]$Process, [string]$InstallDirectory)
+    $Process.Refresh()
+    if (-not $Process.HasExited) {
+        if ($Process.Path -ine (Join-Path $InstallDirectory 'LANStream.exe')) { throw 'Refusing to stop a process without the exact verified target executable path.' }
+        $Process.Kill()
+        if (-not $Process.WaitForExit(15000)) { throw 'The verified Enhanced process did not stop; upgrade cannot copy SQLite safely.' }
+    }
+}
+
+function Start-LanStreamUpgradeProcess {
+    param([string]$InstallDirectory, [string]$LogPrefix)
+    $environment = @{ LANSTREAM_CONFIG_FILE = (Join-Path $InstallDirectory 'config.txt'); LANSTREAM_CACHE_DIR = (Join-Path $InstallDirectory 'cache'); LANSTREAM_PORT = $null; LANSTREAM_PASSWORD = $null; LANSTREAM_USE_MASTER_PASSWORD = $null; LANSTREAM_TRANSCODER = $null }
+    $saved = @{}
+    try {
+        foreach ($key in $environment.Keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process'); [Environment]::SetEnvironmentVariable($key, $environment[$key], 'Process') }
+        Assert-LanStreamUpgradePort @()
+        return Start-Process -FilePath (Join-Path $InstallDirectory 'LANStream.exe') -WorkingDirectory $InstallDirectory -WindowStyle Hidden -PassThru -RedirectStandardOutput ($LogPrefix + '.stdout.txt') -RedirectStandardError ($LogPrefix + '.stderr.txt')
+    }
+    finally { foreach ($key in $saved.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') } }
+}
+
+function Wait-LanStreamUpgradeHealthy {
+    param([Diagnostics.Process]$Process)
+    $ready = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        $Process.Refresh()
+        if ($Process.HasExited) { throw 'Enhanced exited during upgrade startup; inspect the private upgrade logs.' }
+        try {
+            $response = Invoke-LanStreamHttp -Process $Process -Path '/login' -Cookies (New-Object Net.CookieContainer) -TimeoutSeconds 3
+            if ($response.Status -eq 302) { $response = Invoke-LanStreamHttp -Process $Process -Path '/' -Cookies (New-Object Net.CookieContainer) -TimeoutSeconds 3 }
+            if ($response.Status -eq 200 -and $response.Body) { return }
+        }
+        catch { }
+        if ($ready.Elapsed.TotalSeconds -ge 60) { throw 'Enhanced did not become a healthy owned listener on port 8061 within 60 seconds.' }
+        Start-Sleep -Milliseconds 300
+    } while ($true)
+}
+
+function Copy-LanStreamUpgradeCache {
+    param([string]$Source, [string]$Destination)
+    Assert-LanStreamUpgradeTree $Source
+    [IO.Directory]::CreateDirectory($Destination) | Out-Null
+    foreach ($item in @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop)) {
+        Assert-LanStreamNoReparsePoint $item.FullName
+        $output = Join-Path $Destination $item.Name
+        if ($item.PSIsContainer) { Copy-LanStreamUpgradeCache $item.FullName $output }
+        else { [IO.File]::Copy($item.FullName, $output, $false) }
+    }
+}
+
+function Invoke-LanStreamUpgrade {
+    [CmdletBinding()]
+    param([string]$ZipPath, [string]$InstallDirectory = 'C:\LANStream-Enhanced', [string[]]$MediaRoot,
+        [Security.SecureString]$Password, [string]$SampleVideo, [string]$ManifestPath, [string]$ConfigTemplatePath, [switch]$Upgrade)
+    $ErrorActionPreference = 'Stop'
+    $zipLock = $null
+    $process = $null
+    $stage = $null
+    $backup = $null
+    $swapped = $false
+    $originalRunning = $false
+    $originalStopped = $false
+    $rollback = 'not needed; original unchanged'
+    $mutex = $null
+    $ownsMutex = $false
+    try {
+        foreach ($option in @('MediaRoot', 'ConfigTemplatePath', 'Password', 'SampleVideo')) {
+            if ($PSBoundParameters.ContainsKey($option)) { throw ($option + ' cannot be supplied with -Upgrade; existing settings and credentials are preserved.') }
+        }
+        $mutex = New-Object Threading.Mutex($false, (Get-LanStreamUpgradeMutexName $InstallDirectory))
+        try { $ownsMutex = $mutex.WaitOne(0) }
+        catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
+        if (-not $ownsMutex) { throw 'Another upgrade is already operating on this physical installation; no files or processes were changed.' }
+        $InstallDirectory = Assert-LanStreamUpgradePaths $InstallDirectory
+        $original = @(Get-LanStreamUpgradeProcesses $InstallDirectory)
+        Assert-LanStreamUpgradePort $original
+        $zip = Get-LanStreamAbsolutePath $ZipPath
+        if (-not $ManifestPath) { $ManifestPath = Join-Path ([IO.Path]::GetDirectoryName($zip)) 'release-manifest.json' }
+        $manifestFile = Get-LanStreamAbsolutePath $ManifestPath
+        foreach ($inputFile in @($zip, $manifestFile)) {
+            Assert-LanStreamNoReparsePoint $inputFile
+            $inputPhysical = Get-LanStreamPhysicalPath $inputFile
+            if ((Test-LanStreamPathWithin $inputPhysical (Get-LanStreamPhysicalPath 'C:\LANStream')) -or
+                (Test-LanStreamPathWithin $inputPhysical (Get-LanStreamPhysicalPath $InstallDirectory))) { throw 'Upgrade release inputs must be outside the target and protected installation.' }
+        }
+        $manifest = [IO.File]::ReadAllText($manifestFile) | ConvertFrom-Json
+        if ($manifest.archive -isnot [string] -or $manifest.sha256 -isnot [string] -or $manifest.revision -isnot [string] -or
+            $manifest.archive -cne [IO.Path]::GetFileName($zip) -or $manifest.sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+            [string]::IsNullOrWhiteSpace($manifest.revision) -or $manifest.revision -match '[\x00-\x1f]') { throw 'Release manifest is invalid or does not identify this ZIP.' }
+        $zipLock = [IO.File]::Open($zip, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $hash = [BitConverter]::ToString($hasher.ComputeHash($zipLock)).Replace('-', '') }
+        finally { $hasher.Dispose() }
+        if ($hash -ine $manifest.sha256) { throw 'ZIP SHA256 does not match the release manifest. Original installation was not changed.' }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+        try {
+            Assert-LanStreamZipEntries $archive
+            if (@($archive.Entries | Where-Object { $_.FullName -imatch '^LANStream-Enhanced/cache/' -and -not $_.FullName.EndsWith('/') }).Count) { throw 'Upgrade ZIP must not contain cache files; the complete existing cache is preserved.' }
+        }
+        finally { $archive.Dispose() }
+        $parent = [IO.Path]::GetDirectoryName($InstallDirectory)
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N')
+        $stage = Join-Path $parent ('.LANStream-Enhanced-upgrade-' + $stamp)
+        $backup = $InstallDirectory + '.backup-' + $stamp
+        Assert-LanStreamNoReparsePoint $parent
+        [IO.Directory]::CreateDirectory($stage) | Out-Null
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $stage)
+        $zipLock.Dispose()
+        $zipLock = $null
+        $replacement = Join-Path $stage 'LANStream-Enhanced'
+        Assert-LanStreamUpgradeTree $stage
+        # Recheck after extraction, before touching a running server or its database.
+        $null = Assert-LanStreamUpgradePaths $InstallDirectory
+        $original = @(Get-LanStreamUpgradeProcesses $InstallDirectory)
+        Assert-LanStreamUpgradePort $original
+        $originalRunning = $original.Count -gt 0
+        foreach ($oldProcess in $original) { $originalStopped = $true; Stop-LanStreamUpgradeProcess $oldProcess $InstallDirectory }
+        Assert-LanStreamUpgradePort @()
+        if (@(Get-LanStreamUpgradeProcesses $InstallDirectory).Count) { throw 'An Enhanced process appeared after stop; refusing the upgrade.' }
+        $null = Assert-LanStreamUpgradePaths $InstallDirectory
+        [IO.Directory]::Move($InstallDirectory, $backup)
+        Write-Host ('Backup retained: ' + $backup)
+        Assert-LanStreamUpgradeTree $backup
+        [IO.File]::Copy((Join-Path $backup 'config.txt'), (Join-Path $replacement 'config.txt'), $true)
+        Copy-LanStreamUpgradeCache (Join-Path $backup 'cache') (Join-Path $replacement 'cache')
+        Assert-LanStreamUpgradeTree $stage
+        Assert-LanStreamNoReparsePoint $parent
+        [IO.Directory]::Move($replacement, $InstallDirectory)
+        $swapped = $true
+        $logPrefix = Join-Path $stage 'upgrade-application'
+        $process = Start-LanStreamUpgradeProcess $InstallDirectory $logPrefix
+        Wait-LanStreamUpgradeHealthy $process
+        Write-Host ('Upgrade PASS. Enhanced is running on port 8061. Backup retained: ' + $backup)
+        Write-Host ('Private upgrade logs: ' + $stage)
+        Write-Host 'Rollback status: not needed.'
+        return 0
+    }
+    catch {
+        Write-Warning ('Upgrade FAIL: ' + $_.Exception.Message)
+        try {
+            if ($process) { Stop-LanStreamUpgradeProcess $process $InstallDirectory }
+            if ($backup -and (Test-Path -LiteralPath $backup -PathType Container)) {
+                Assert-LanStreamUpgradeTree $backup
+                Assert-LanStreamNoReparsePoint ([IO.Path]::GetDirectoryName($InstallDirectory))
+                if ($swapped) {
+                    Assert-LanStreamUpgradeTree $InstallDirectory
+                    $failed = $InstallDirectory + '.failed-' + $stamp
+                    [IO.Directory]::Move($InstallDirectory, $failed)
+                    Write-Warning ('Failed replacement retained: ' + $failed)
+                }
+                if (Test-Path -LiteralPath $InstallDirectory) { throw 'Target became occupied; backup retained without overwriting it.' }
+                [IO.Directory]::Move($backup, $InstallDirectory)
+                $rollback = 'restored original installation'
+            }
+            if ($originalRunning -and $originalStopped -and -not @(Get-LanStreamUpgradeProcesses $InstallDirectory).Count) {
+                $restarted = Start-LanStreamUpgradeProcess $InstallDirectory (Join-Path $stage 'rollback-application')
+                Wait-LanStreamUpgradeHealthy $restarted
+                $rollback += '; original server restarted'
+            }
+        }
+        catch { $rollback = 'FAILED: ' + $_.Exception.Message + '; retained backup: ' + $backup }
+        Write-Warning ('Rollback status: ' + $rollback)
+        if ($stage) { Write-Warning ('Private upgrade staging/logs retained: ' + $stage) }
+        return 1
+    }
+    finally {
+        if ($zipLock) { $zipLock.Dispose() }
+        if ($ownsMutex) { $mutex.ReleaseMutex() }
+        if ($mutex) { $mutex.Dispose() }
+    }
+}
+
 function Invoke-LanStreamInstaller {
     [CmdletBinding()]
     param([string]$ZipPath, [string]$InstallDirectory = 'C:\LANStream-Enhanced', [string[]]$MediaRoot,
-        [Security.SecureString]$Password, [string]$SampleVideo, [string]$ManifestPath, [string]$ConfigTemplatePath)
+        [Security.SecureString]$Password, [string]$SampleVideo, [string]$ManifestPath, [string]$ConfigTemplatePath, [switch]$Upgrade)
+    if ($Upgrade) { return Invoke-LanStreamUpgrade @PSBoundParameters }
     $ErrorActionPreference = 'Stop'
     $stage = $null
     $installed = $false

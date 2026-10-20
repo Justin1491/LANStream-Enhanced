@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path, PureWindowsPath
+import shutil
 import zipfile
 
 
@@ -22,32 +23,49 @@ try {
     try { $hash=[BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-','') } finally { $hasher.Dispose(); $stream.Dispose() };
     if ($hash -ine $manifest.installer.sha256) { throw 'Installer checksum mismatch. Nothing was installed.' };
     Unblock-File -LiteralPath $installer;
-    & $installer -ManifestPath $manifestPath -ConfigTemplatePath (Join-Path $folder 'config.txt');
+    if ($env:LANSTREAM_SETUP_UPGRADE -eq '1') { & $installer -ManifestPath $manifestPath -Upgrade }
+    else { & $installer -ManifestPath $manifestPath -ConfigTemplatePath (Join-Path $folder 'config.txt') };
     exit $LASTEXITCODE
 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 """
 
 README = """LANStream Enhanced N100 setup
 
-1. Extract this entire outer ZIP to a local folder on the N100.
-2. Double-click Install Enhanced.cmd. Keep all files together.
-3. Enter a password for the new Enhanced test profile when prompted.
+1. Extract this entire outer ZIP to a writable local folder on the N100,
+   such as Downloads, outside the existing installation.
+2. For an existing Enhanced installation, double-click Upgrade Enhanced.cmd.
+   For a first installation, double-click Install Enhanced.cmd.
+3. Keep all files together. Only a first installation asks for a new password.
 
-config.txt contains your UNC share mappings and a password placeholder.
-The launcher uses that template; the installer writes the chosen password
+UPGRADES: Upgrade Enhanced.cmd updates C:\\LANStream-Enhanced on port 8061.
+It verifies the package, stops only that installation's running app, preserves
+config.txt and the complete cache (including Favorites), and retains the old
+installation as a dated sibling backup. It starts the new app and restores the
+old installation if startup fails. Your passwords, roots and exclusions stay
+unchanged. The setup config.txt template is ignored during an upgrade.
+Backups contain private settings and Favorites; keep them private. Leave room
+for the old application plus a second copy of its cache. No backup is deleted
+automatically. Database errors that prevent startup cause rollback, never a reset.
+
+For a first install, config.txt contains your UNC mappings and a password
+placeholder. Install Enhanced.cmd uses that template and writes the password
 into C:\\LANStream-Enhanced\\config.txt before starting the app on port 8061.
 Existing household profiles/exclusions require review before broader use.
 Edit mappings/exclusions in the template before setup if needed. Do not
 replace the password placeholder manually or add another profile.
 
 Setup checks the installer and application ZIP hashes, then runs automated
-acceptance tests. It refuses existing install folders and occupied port8061.
+acceptance tests for a first install. First installs refuse existing folders;
+upgrades require an existing Enhanced installation. Unrelated port8061 owners
+are refused. Routine upgrades check startup without requiring QSV acceptance.
 C:\\LANStream and port8060 are protected. No service, scheduled task, firewall
 rule, global execution policy or NAS files are changed. The launcher unblocks
 only its checksum-verified installer script, using a temporary process policy.
 
-PASS leaves Enhanced running; FAIL stops only the instance it started.
-Read C:\\LANStream-Enhanced\\acceptance-report.json for results. A failed new
+PASS leaves Enhanced running. Upgrade failures restore the previous install;
+it is restarted only if it was running before the upgrade.
+Upgrade prints backup/recovery status and its private log folder. For a first
+installation, read C:\\LANStream-Enhanced\\acceptance-report.json. A failed new
 install remains for diagnosis; preserve it before retrying a fresh install.
 Windows may ask to allow Private-network access for the new executable.
 
@@ -107,22 +125,29 @@ def build_bundle(artifact_directory, roots, installer_path=BASE / 'scripts' / IN
     manifest['installer'] = dict(script=INSTALLER, sha256=hashlib.sha256(installer_bytes).hexdigest())
     manifest_bytes = (json.dumps(manifest, indent=2) + '\n').encode('utf-8')
     bootstrap = ' '.join(line.strip() for line in BOOTSTRAP.splitlines() if line.strip())
-    launcher = '\r\n'.join([
-        '@echo off', 'setlocal DisableDelayedExpansion', 'set "LANSTREAM_SETUP_FOLDER=%~dp0"',
-        '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -Command "' + bootstrap + '"',
-        'set "setupResult=%errorlevel%"', 'echo.',
-        'if not "%setupResult%"=="0" echo Setup failed. Read the messages above; no existing install was stopped.',
-        'pause', 'exit /b %setupResult%', '',
-    ]).encode('ascii')
-    entries = {'Install Enhanced.cmd': launcher, INSTALLER: installer_bytes,
+    def launcher(upgrade):
+        return '\r\n'.join([
+            '@echo off', 'setlocal DisableDelayedExpansion', 'set "LANSTREAM_SETUP_FOLDER=%~dp0"',
+            'set "LANSTREAM_SETUP_UPGRADE=' + ('1' if upgrade else '0') + '"',
+            '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -Command "' + bootstrap + '"',
+            'set "setupResult=%errorlevel%"', 'echo.',
+            'if not "%setupResult%"=="0" echo Setup failed. Read the messages above for backup or recovery details.',
+            'pause', 'exit /b %setupResult%', '',
+        ]).encode('ascii')
+    entries = {'Install Enhanced.cmd': launcher(False), 'Upgrade Enhanced.cmd': launcher(True), INSTALLER: installer_bytes,
                'release-manifest.json': manifest_bytes, 'config.txt': config,
                'README-FIRST.txt': README.encode('utf-8')}
     output = artifact_directory / (FOLDER + '.zip')
     temporary = artifact_directory / (FOLDER + '.next.zip')
     with zipfile.ZipFile(temporary, 'w') as bundle:
-        bundle.write(application, FOLDER + '/' + archive_name, compress_type=zipfile.ZIP_STORED)
+        info = zipfile.ZipInfo.from_file(application, FOLDER + '/' + archive_name)
+        info.create_system, info.external_attr, info.extra = 0, 0x20, b''
+        with application.open('rb') as source, bundle.open(info, 'w') as target:
+            shutil.copyfileobj(source, target)
         for name, data in entries.items():
-            bundle.writestr(FOLDER + '/' + name, data, compress_type=zipfile.ZIP_DEFLATED)
+            info = zipfile.ZipInfo(FOLDER + '/' + name)
+            info.create_system, info.external_attr, info.extra = 0, 0x20, b''
+            bundle.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
     with zipfile.ZipFile(temporary) as bundle:
         if bundle.testzip() is not None:
             raise RuntimeError('Bundle CRC verification failed')

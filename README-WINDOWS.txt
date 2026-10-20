@@ -20,6 +20,14 @@ Extract to C:\LANStream-Enhanced and use port 8061. Do not replace C:\LANStream
 or its config/cache on port 8060. See docs/enhanced-guide.md and docs/status.md.
 The cache now contains durable Favorites; back it up before upgrading.
 
+Routine updates
+---------------
+Extract the latest N100 setup ZIP and run Upgrade Enhanced.cmd. It preserves
+the existing config.txt and complete cache, retains a dated backup of the old
+installation, and restores it if the new app fails to start. Install Enhanced.cmd
+is for a first installation. See docs/n100-installer.md for custom folders and
+backup/recovery details. Never replace your saved config with the setup template.
+
 Configuration
 -------------
 Edit config.txt beside LANStream.exe.

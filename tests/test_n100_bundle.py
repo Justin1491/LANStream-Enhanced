@@ -23,7 +23,8 @@ class N100Bundle(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.work = Path(self.temp.name)
         self.installer = self.work / bundle.INSTALLER
-        self.installer.write_text("param([string]$ManifestPath,[string]$ConfigTemplatePath)\n"
+        self.installer.write_text("param([string]$ManifestPath,[string]$ConfigTemplatePath,[switch]$Upgrade)\n"
+                                  "if ($Upgrade) { if ($ConfigTemplatePath) { exit 9 }; [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'upgrade-ok.txt'),'upgrade'); exit 0 }\n"
                                   "if (-not (Test-Path -LiteralPath $ConfigTemplatePath)) { exit 8 }\n"
                                   "[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'launcher-ok.txt'),[IO.File]::ReadAllText($ConfigTemplatePath))\nexit 0\n", encoding='ascii')
         self.application = self.work / 'LANStream-Enhanced-Windows-x64-test.zip'
@@ -42,8 +43,13 @@ class N100Bundle(unittest.TestCase):
         prefix = bundle.FOLDER + '/'
         with zipfile.ZipFile(output) as archive:
             self.assertIsNone(archive.testzip())
+            for entry in archive.infolist():
+                self.assertEqual(entry.create_system, 0, 'Use Windows attributes, not Unix ownership permissions')
+                self.assertEqual(entry.external_attr, 0x20, 'Files must extract writable without read-only/system flags')
+                self.assertEqual(entry.extra, b'', 'Do not carry filesystem-specific permission metadata')
+                self.assertFalse(entry.flag_bits & 1, 'Setup files must not be encrypted')
             self.assertEqual(set(archive.namelist()), {prefix + name for name in
-                [self.application.name, bundle.INSTALLER, 'Install Enhanced.cmd', 'config.txt', 'release-manifest.json', 'README-FIRST.txt']})
+                [self.application.name, bundle.INSTALLER, 'Install Enhanced.cmd', 'Upgrade Enhanced.cmd', 'config.txt', 'release-manifest.json', 'README-FIRST.txt']})
             self.assertEqual(archive.read(prefix + self.application.name), self.application.read_bytes())
             config = archive.read(prefix + 'config.txt').decode('utf-8')
             self.assertIn('port=8061\r\n', config)
@@ -70,6 +76,19 @@ class N100Bundle(unittest.TestCase):
                       [r'C:\Media' + '\u2028Other']):
             with self.subTest(roots=roots), self.assertRaises(ValueError):
                 bundle.config_text(roots)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows CMD launcher')
+    def test_upgrade_launcher_preserves_existing_config_instead_of_using_setup_template(self):
+        output = self.build()
+        with zipfile.ZipFile(output) as archive:
+            archive.extractall(self.work / 'Upgrade & Café')
+        folder = self.work / 'Upgrade & Café' / bundle.FOLDER
+        (folder / 'config.txt').write_text('Must not be passed to the upgrade installer', encoding='utf-8')
+        result = subprocess.run(['cmd', '/d', '/c', 'Upgrade Enhanced.cmd'], cwd=folder,
+                                input=b'\r\n', capture_output=True, timeout=40)
+        self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode(errors='replace'))
+        self.assertEqual((folder / 'upgrade-ok.txt').read_text(), 'upgrade')
+        self.assertFalse((folder / 'launcher-ok.txt').exists())
 
     @unittest.skipUnless(os.name == 'nt', 'Windows CMD launcher')
     def test_double_click_launcher_handles_spaces_ampersand_and_unicode(self):

@@ -16,7 +16,7 @@ LANStream runs on Linux through Docker or as a portable Windows application. It 
 
 ## Enhanced edition
 
-Based on [candre23/LANStream](https://github.com/candre23/LANStream). See the [Enhanced operations guide](docs/enhanced-guide.md) for isolated port-8061 deployment, configuration, cache/favorite backups, benchmarks and rollback. See [measured status](docs/status.md) for local verification and remaining N100/SMB checks. The existing production install must stay untouched.
+Based on [candre23/LANStream](https://github.com/candre23/LANStream). See the [Enhanced operations guide](docs/enhanced-guide.md) for isolated port-8061 deployment, configuration, cache/favorite backups, benchmarks and rollback. For subsequent releases, use [Upgrade Enhanced.cmd](docs/n100-installer.md#updating-an-existing-enhanced-installation) to preserve configuration and Favorites with a backup and startup rollback. See [measured status](docs/status.md) for local verification and remaining N100/SMB checks. The existing production install must stay untouched.
 
 ## Why LANStream?
 

@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -38,7 +39,8 @@ class InstallerSafety(unittest.TestCase):
         self.assertTrue(SCRIPT.is_file(), 'The installer script must exist')
         command = "$ErrorActionPreference='Stop'; . " + literal(SCRIPT) + '; ' + body
         encoded = base64.b64encode(command.encode('utf-16le')).decode('ascii')
-        environment = dict(os.environ, TMP=str(self.work), TEMP=str(self.work))
+        environment = {key: value for key, value in os.environ.items() if not key.startswith('LANSTREAM_')}
+        environment.update(TMP=str(self.work), TEMP=str(self.work))
         # Keep a PowerShell 7 parent from supplying incompatible core modules to 5.1.
         environment['PSModulePath'] = str(Path(POWERSHELL).parent / 'Modules')
         return subprocess.run([POWERSHELL, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-EncodedCommand', encoded],
@@ -228,6 +230,178 @@ class InstallerSafety(unittest.TestCase):
         result = self.run_ps('(Read-LanStreamConfigTemplate -Path ' + literal(path) + ').Text | ConvertTo-Json -Compress')
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
         self.assertEqual(json.loads(result.stdout.decode('utf-8-sig')), text)
+
+    def existing_upgrade(self):
+        self.target.mkdir()
+        for name in ('LANStream.exe', 'ffmpeg.exe', 'ffprobe.exe', '7z.exe', '7z.dll'):
+            (self.target / name).write_bytes(b'Existing fictional component')
+        (self.target / '_internal').mkdir()
+        (self.target / '_internal' / 'runtime').write_bytes(b'Existing runtime')
+        (self.target / 'cache').mkdir()
+        (self.target / 'cache' / 'index.sqlite3').write_bytes(b'SQLite format 3\x00' + b'Fictional DB')
+        (self.target / 'config.txt').write_bytes(self.template().replace('__LANSTREAM_SETUP_PASSWORD__', 'ExistingPassword').encode('utf-8'))
+        return {str(p.relative_to(self.target)): p.read_bytes() for p in self.target.rglob('*') if p.is_file()}
+
+    def assert_upgrade_unchanged(self, before):
+        self.assertEqual(before, {str(p.relative_to(self.target)): p.read_bytes()
+                                  for p in self.target.rglob('*') if p.is_file()})
+        self.assertFalse(list(self.work.glob('Enhanced.backup-*')))
+
+    def upgrade(self, **kwargs):
+        return self.installer(**kwargs).split(' -MediaRoot @(', 1)[0] + ' -Upgrade'
+
+    def test_upgrade_requires_existing_enhanced_markers(self):
+        result = self.run_ps('exit (' + self.upgrade() + ')')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'existing Enhanced', result.stdout + result.stderr)
+        before = self.existing_upgrade()
+        (self.target / '7z.dll').unlink()
+        before.pop('7z.dll')
+        result = self.run_ps('exit (' + self.upgrade() + ')')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'marker', result.stdout + result.stderr)
+        self.assert_upgrade_unchanged(before)
+
+    def test_upgrade_rejects_inputs_that_replace_saved_settings(self):
+        before = self.existing_upgrade()
+        for option in (" -MediaRoot @()", " -ConfigTemplatePath ''", " -Password $null", " -SampleVideo ''"):
+            with self.subTest(option=option):
+                result = self.run_ps('exit (' + self.upgrade() + option + ')')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(b'cannot be supplied with -Upgrade', result.stdout + result.stderr)
+                self.assert_upgrade_unchanged(before)
+
+    def test_upgrade_hash_and_unsafe_zip_fail_before_original_changes(self):
+        before = self.existing_upgrade()
+        result = self.run_ps('exit (' + self.upgrade(digest='0' * 64) + ')')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'SHA256', result.stdout + result.stderr)
+        self.assert_upgrade_unchanged(before)
+        command = self.upgrade()
+        archive = self.work / 'release.zip'
+        with zipfile.ZipFile(archive, 'a') as package:
+            package.writestr('LANStream-Enhanced/../escape.txt', 'unsafe')
+        manifest = self.work / 'release-manifest.json'
+        data = json.loads(manifest.read_text())
+        data['sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+        manifest.write_text(json.dumps(data))
+        result = self.run_ps('exit (' + command + ')')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'unsafe', result.stdout + result.stderr)
+        self.assert_upgrade_unchanged(before)
+        self.assertFalse((self.work / 'escape.txt').exists())
+
+    def test_upgrade_wrong_port_and_external_cache_are_rejected(self):
+        before = self.existing_upgrade()
+        config = self.target / 'config.txt'
+        config.write_bytes(config.read_bytes().replace(b'port=8061', b'port=8060'))
+        before['config.txt'] = config.read_bytes()
+        result = self.run_ps('exit (' + self.upgrade() + ')')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'8061', result.stdout + result.stderr)
+        self.assert_upgrade_unchanged(before)
+        config.write_bytes(config.read_bytes().replace(b'port=8060', b'port=8061'))
+        before['config.txt'] = config.read_bytes()
+        result = self.run_ps('$env:LANSTREAM_CACHE_DIR=' + literal(self.media) + '; exit (' + self.upgrade() + ')')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b'external', result.stdout + result.stderr)
+        self.assert_upgrade_unchanged(before)
+
+    def test_upgrade_rejects_protected_target_and_descendant_junction(self):
+        self.assert_rejected('Assert-LanStreamUpgradePaths -InstallDirectory C:\\LANStream', 'protected')
+        before = self.existing_upgrade()
+        alias = self.target / 'cache' / 'alias'
+        link = subprocess.run(['cmd', '/c', 'mklink', '/J', str(alias), str(self.media)], capture_output=True)
+        if link.returncode:
+            self.skipTest('junction creation unavailable')
+        try:
+            result = self.run_ps('exit (' + self.upgrade() + ')')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(b'reparse', result.stdout + result.stderr)
+            self.assertEqual((self.media / 'Notes.txt').read_text(), 'Fictional media only')
+        finally:
+            alias.rmdir()
+        self.assert_upgrade_unchanged(before)
+
+    def test_upgrade_cache_copy_preserves_all_sqlite_companions_and_previews(self):
+        self.existing_upgrade()
+        cache = self.target / 'cache'
+        for name in ('index.sqlite3-wal', 'index.sqlite3-shm', 'index.sqlite3-journal', 'preview.jpg'):
+            (cache / name).write_bytes(b'Fictional preserved ' + name.encode())
+        (cache / 'nested').mkdir()
+        (cache / 'nested' / 'old-format.bin').write_bytes(b'Unknown cache format is retained')
+        destination = self.work / 'copied-cache'
+        result = self.run_ps('Copy-LanStreamUpgradeCache ' + literal(cache) + ' ' + literal(destination))
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        expected = {str(p.relative_to(cache)): p.read_bytes() for p in cache.rglob('*') if p.is_file()}
+        actual = {str(p.relative_to(destination)): p.read_bytes() for p in destination.rglob('*') if p.is_file()}
+        self.assertEqual(actual, expected)
+
+    def test_upgrade_never_stops_process_at_another_executable_path(self):
+        result = self.run_ps("$p=Start-Process -FilePath " + literal(POWERSHELL)
+                             + " -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 20' -WindowStyle Hidden -PassThru; "
+                             + "try { try { Stop-LanStreamUpgradeProcess $p " + literal(self.target)
+                             + "; throw 'WRONG PROCESS STOPPED' } catch { if ($_.Exception.Message -eq 'WRONG PROCESS STOPPED') { throw }; "
+                             + "$p.Refresh(); if ($p.HasExited) { throw 'WRONG PROCESS EXITED' }; Write-Output $_.Exception.Message } } "
+                             + "finally { $p.Refresh(); if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit(5000) | Out-Null } }")
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        self.assertIn(b'exact verified', result.stdout)
+
+    def test_upgrade_refuses_conflicting_runtime_environment_before_changes(self):
+        before = self.existing_upgrade()
+        for key, value in (('LANSTREAM_PASSWORD', 'DifferentPassword'),
+                           ('LANSTREAM_USE_MASTER_PASSWORD', 'true'),
+                           ('LANSTREAM_TRANSCODER', 'software'), ('LANSTREAM_PORT', '8062')):
+            with self.subTest(key=key):
+                result = self.run_ps('$env:' + key + '=' + literal(value) + '; exit (' + self.upgrade() + ')')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(b'environment overrides', result.stdout + result.stderr)
+                self.assert_upgrade_unchanged(before)
+
+    def test_upgrade_does_not_contact_offline_unc_media(self):
+        self.existing_upgrade()
+        config = self.target / 'config.txt'
+        config.write_bytes(config.read_bytes().replace(str(self.media).encode(), b'\\\\unreachable-fictional-server\\offline-share'))
+        result = self.run_ps("$realCheck=${function:Assert-LanStreamNoReparsePoint}; function Assert-LanStreamNoReparsePoint { param([string]$Path); "
+                             + "if ($Path.StartsWith('\\\\')) { throw 'CONTACTED OFFLINE SHARE' }; & $realCheck $Path }; "
+                             + 'Assert-LanStreamUpgradePaths ' + literal(self.target))
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+
+    def test_upgrade_health_accepts_login_and_passwordless_home(self):
+        for redirect in (False, True):
+            with self.subTest(passwordless=redirect):
+                result = self.run_ps('$script:paths=@(); $script:passwordless=$' + str(redirect).lower()
+                                     + "; function Invoke-LanStreamHttp { param($Process,$Path,$Cookies,$TimeoutSeconds); "
+                                     + "$script:paths += $Path; if ($script:passwordless -and $Path -eq '/login') { "
+                                     + "return [pscustomobject]@{Status=302;Body='redirect'} }; return [pscustomobject]@{Status=200;Body='healthy'} }; "
+                                     + 'Wait-LanStreamUpgradeHealthy ([Diagnostics.Process]::GetCurrentProcess()); $script:paths | ConvertTo-Json -Compress')
+                self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+                expected = ['/login', '/'] if redirect else '/login'
+                self.assertEqual(json.loads(result.stdout.decode('utf-8-sig')), expected)
+
+    def test_upgrade_refuses_another_operation_on_same_physical_target(self):
+        before = self.existing_upgrade()
+        signal = self.work / 'mutex-ready'
+        command = ("$ErrorActionPreference='Stop'; . " + literal(SCRIPT)
+                   + '; $m=New-Object Threading.Mutex($false,(Get-LanStreamUpgradeMutexName '
+                   + literal(self.target) + ')); try { $null=$m.WaitOne(); [IO.File]::WriteAllText('
+                   + literal(signal) + ",'ready'); Start-Sleep -Seconds 20 } finally { $m.ReleaseMutex(); $m.Dispose() }")
+        encoded = base64.b64encode(command.encode('utf-16le')).decode('ascii')
+        holder = subprocess.Popen([POWERSHELL, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-EncodedCommand', encoded],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  env=dict(os.environ, TMP=str(self.work), TEMP=str(self.work)))
+        try:
+            deadline = time.monotonic() + 10
+            while not signal.exists() and holder.poll() is None and time.monotonic() < deadline:
+                time.sleep(.1)
+            self.assertTrue(signal.exists(), 'Mutex holder did not become ready')
+            result = self.run_ps('exit (' + self.upgrade() + ')')
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(b'Another upgrade', result.stdout + result.stderr)
+            self.assert_upgrade_unchanged(before)
+        finally:
+            holder.terminate()
+            holder.communicate(timeout=10)
 
     def test_template_and_media_root_cannot_be_combined(self):
         path = self.work / 'config-template.txt'

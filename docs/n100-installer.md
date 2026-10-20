@@ -1,10 +1,54 @@
 # Isolated N100 installer and acceptance checks
 
 Copy LANStream-Enhanced-N100-Setup.zip to the N100 and **extract the entire ZIP
-to a local folder**. Open the extracted LANStream-Enhanced-N100-Setup folder
-and double-click **Install Enhanced.cmd** under the Windows account that can
-read the media shares. Keep all six included files together; leave the inner
+to a local folder you can write to**, such as Downloads, outside the existing
+installation. Open the extracted LANStream-Enhanced-N100-Setup folder
+and double-click **Install Enhanced.cmd** for a first install, or **Upgrade
+Enhanced.cmd** to update an existing Enhanced install. Use the Windows account
+that can read the media shares. Keep all seven included files together; leave the inner
 application ZIP compressed.
+
+## Updating an existing Enhanced installation
+
+For routine releases, extract the new setup ZIP and run **Upgrade Enhanced.cmd**.
+It updates `C:\LANStream-Enhanced`, verifies the package before changing anything,
+and stops only the app running from that installation. It keeps your existing
+`config.txt` byte-for-byte and copies the complete `cache` directory, including
+Favorites, directory snapshots and generated previews, into the new app.
+The setup template and password prompt are not used during upgrades. Existing
+profile passwords, roots, exclusions and preferences remain unchanged; new
+settings use the application's defaults when absent from your config.
+
+The previous installation is retained as a dated sibling backup. Allow free
+disk space for the new app and another copy of your cache. Backups are not
+deleted automatically and contain private configuration and Favorites. Keep
+them until the new version has been checked, then manage older backups yourself.
+The console prints the exact `<install-folder>.backup-...` path and rollback status.
+Private upgrade logs remain in the printed `.LANStream-Enhanced-upgrade-...`
+sibling folder. A failed replacement is retained as `<install-folder>.failed-...`.
+
+The installer starts the replacement app and checks its listener and HTTP
+response. If startup fails, it keeps the failed replacement for diagnosis,
+restores the previous installation, and restarts it if it was running before.
+An unsupported schema or a database error that prevents startup causes rollback,
+never a silent reset. Startup checks do not replace a full database integrity
+check. A future release that requires a data migration needs explicit migration
+support; routine upgrades do not erase data.
+
+For a custom Enhanced installation folder:
+
+```powershell
+.\Install-LANStreamEnhanced.ps1 -Upgrade -InstallDirectory 'C:\LANStream-Enhanced-Trial'
+```
+
+Do not combine `-Upgrade` with `-MediaRoot`, `-ConfigTemplatePath`, `-Password` or
+`-SampleVideo`. The upgrade uses the existing configuration and supports the
+isolated Enhanced port 8061. It refuses unrelated listeners and unsafe paths.
+Conflicting custom runtime environment overrides are refused before changes.
+Only one upgrade can operate on the same installation at a time.
+It does not run the first-install QSV benchmark; check actual playback afterward.
+
+## First installation
 
 The launcher checks the installer SHA256 against the included manifest before
 unblocking that script, then runs it with a process-only RemoteSigned policy.
@@ -54,8 +98,9 @@ installer creates no service, scheduled task or firewall rule. Allow the new
 executable on Private networks when Windows prompts.
 
 The default destination is C:\LANStream-Enhanced, with an independent config
-and cache on port 8061. Existing destinations and an occupied 8061 are refused;
-no old install is overwritten or stopped. To use another fresh local folder:
+and cache on port 8061. First installations refuse existing destinations and
+an occupied 8061; use Upgrade Enhanced.cmd for an existing Enhanced install.
+To use another fresh local folder:
 
 ```powershell
 .\Install-LANStreamEnhanced.ps1 -InstallDirectory 'C:\LANStream-Enhanced-Trial' -MediaRoot @('\\NAS\Movies')

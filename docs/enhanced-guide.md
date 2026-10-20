@@ -164,6 +164,14 @@ preserve cache/index.sqlite3 and its companions containing Favorites.
 
 ## Backup, schema and index recovery
 
+For routine updates, extract the new N100 setup ZIP and run **Upgrade Enhanced.cmd**.
+It preserves the existing configuration and full cache, keeps the previous app
+as a dated sibling backup, and restores it if the replacement fails to start.
+It stops only the selected Enhanced app and leaves unrelated installs alone.
+Use **Install Enhanced.cmd** only for a first installation. See the
+[upgrade instructions](n100-installer.md#updating-an-existing-enhanced-installation)
+for custom folders, backup space, recovery behavior and limits.
+
 The database is **cache/index.sqlite3**, schema version 1, using SQLite WAL.
 It contains regenerable snapshots/frontiers and durable favorites. Preserve
 config.txt and the complete cache directory when upgrading. Stop the enhanced

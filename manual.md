@@ -1374,13 +1374,20 @@ config.txt
 cache\
 ```
 
-Recommended process:
+For Enhanced, extract the latest setup ZIP and run **Upgrade Enhanced.cmd**.
+It preserves your existing configuration, Favorites and previews, keeps a dated
+backup of the previous installation, and restores it if startup fails. The
+upgrade does not ask you to recreate profiles or media mappings. See the
+[installer upgrade instructions](docs/n100-installer.md#updating-an-existing-enhanced-installation).
+
+If updating manually with the portable app ZIP:
 
 1. Stop LANStream.
-2. Back up your existing `config.txt`.
+2. Back up your complete existing installation.
 3. Extract the new release to a new folder.
 4. Copy your existing `config.txt` into the new folder.
-5. Optionally copy the old `cache` folder to preserve thumbnails.
+5. Copy the entire old `cache` folder, including `index.sqlite3` and any WAL/SHM
+   companions, to preserve Favorites, indexing data and thumbnails.
 6. Start the new `LANStream.exe`.
 7. Confirm `/transcoder-status` reports the expected backend.
 
