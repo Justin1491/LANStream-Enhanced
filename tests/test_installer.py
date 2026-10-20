@@ -132,6 +132,37 @@ class InstallerSafety(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
         self.assertEqual(float(result.stdout.strip()), 19)
 
+    def test_listing_accepts_large_library_across_bounded_pages(self):
+        for count in (100, 1, 0):
+            listing = dict(items=[dict(kind='folder')] * count, total=201, pages=3,
+                           state='ready', refreshing=False, error=None)
+            result = self.run_ps('Assert-LanStreamListing (ConvertFrom-Json ' + literal(json.dumps(listing)) + ')')
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+
+    def test_listing_errors_distinguish_scan_failure_from_page_size(self):
+        cases = [
+            (dict(items=[], state='offline', error='Directory unavailable. Try refreshing later.'), b'offline', False),
+            (dict(items=[], state='error', error='Directory scan timed out. Try refreshing later.'), b'timed out', False),
+            (dict(state='ready', error=None), b'items', False),
+            (dict(items=[{}] * 101, state='ready', error=None), b'101', True),
+        ]
+        for listing, expected, page_error in cases:
+            with self.subTest(expected=expected):
+                result = self.run_ps('try { Assert-LanStreamListing (ConvertFrom-Json ' + literal(json.dumps(listing))
+                                     + "); throw 'UNEXPECTED SUCCESS' } catch { Write-Output $_.Exception.Message }")
+                self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+                self.assertIn(expected, result.stdout)
+                if not page_error:
+                    self.assertNotIn(b'100', result.stdout)
+
+    def test_listing_allows_pending_only_during_initial_scan(self):
+        listing = literal(json.dumps(dict(items=[], state='loading', error=None, refreshing=True)))
+        allowed = self.run_ps('Assert-LanStreamListing (ConvertFrom-Json ' + listing + ') -AllowPending')
+        self.assertEqual(allowed.returncode, 0, allowed.stderr.decode(errors='replace'))
+        rejected = self.run_ps('try { Assert-LanStreamListing (ConvertFrom-Json ' + listing
+                               + "); throw 'UNEXPECTED SUCCESS' } catch { Write-Output $_.Exception.Message }")
+        self.assertIn(b'still loading', rejected.stdout)
+
     def installer(self, digest=None, archive_name='release.zip', password='FictionalTestPassword'):
         archive = self.work / 'release.zip'
         with zipfile.ZipFile(archive, 'w') as package:

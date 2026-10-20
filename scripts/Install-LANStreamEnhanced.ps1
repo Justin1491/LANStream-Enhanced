@@ -355,11 +355,14 @@ function Invoke-LanStreamHttp {
 }
 
 function Assert-LanStreamListing {
-    param($Listing)
-    if ($null -eq $Listing.items -or $Listing.error -or $Listing.state -in @('error', 'offline') -or @($Listing.items).Count -gt 100) {
-        throw 'Listing failed, is offline, or exceeded the 100-item page bound.'
+    param($Listing, [switch]$AllowPending)
+    if ($null -eq $Listing.items) { throw 'Browse response did not include an items array.' }
+    if ($Listing.error -or $Listing.state -in @('error', 'offline')) {
+        $detail = if ($Listing.error) { $Listing.error } else { 'Directory is unavailable. Check share access and connectivity.' }
+        throw ('Directory scan failed (' + $Listing.state + '): ' + $detail)
     }
-    if ($Listing.state -ne 'ready' -or $Listing.refreshing) { throw 'Listing is still loading or refreshing; it cannot be a warm sample.' }
+    if (@($Listing.items).Count -gt 100) { throw ('Browse response returned ' + @($Listing.items).Count + ' items on one page; the API page limit is 100. The library folder count is not limited.') }
+    if (-not $AllowPending -and ($Listing.state -ne 'ready' -or $Listing.refreshing)) { throw 'Listing is still loading or refreshing; it cannot be a warm sample.' }
 }
 
 function Assert-LanStreamUpgradeTree {
@@ -778,7 +781,8 @@ function Invoke-LanStreamInstaller {
                 $response = Invoke-LanStreamHttp -Process $process -Path $url -Cookies $cookies -TimeoutSeconds ([math]::Max(1, [math]::Min(15, [math]::Ceiling(60 - $cold.Elapsed.TotalSeconds))))
                 if ($response.Status -ne 200) { throw 'Browse endpoint did not return HTTP 200.' }
                 $listing = $response.Body | ConvertFrom-Json
-                if ($null -eq $listing.items -or $listing.error -or $listing.state -in @('error', 'offline') -or @($listing.items).Count -gt 100) { throw 'Cold browse failed or returned more than 100 items.' }
+                try { Assert-LanStreamListing $listing -AllowPending }
+                catch { throw ('Library ' + ($index + 1) + ' initial scan: ' + $_.Exception.Message) }
                 if ($cold.Elapsed.TotalSeconds -ge 60) { throw 'Cold browse did not finish within 60 seconds.' }
                 if ($listing.state -eq 'ready' -and -not $listing.refreshing) { break }
                 Start-Sleep -Milliseconds 250

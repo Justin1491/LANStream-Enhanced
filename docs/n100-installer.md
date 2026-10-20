@@ -123,6 +123,11 @@ search coverage is partial until discovery finishes. The acceptance checks do
 not wait for an exhaustive crawl or start bulk thumbnail generation.
 Cold means a new application cache; Windows/SMB caches are not flushed.
 
+The 100-item check applies to each API response page, not the number of folders
+in a library. Larger folders are paginated. Initial-scan failures identify the
+library number and report the server's scan error separately from a page-size
+violation. A scan timeout or unavailable share is not a folder-count limit.
+
 Warm browse p95 must be at most 500 ms and search p95 at most 300 ms. Real QSV
 must work: software fallback does not pass N100 acceptance. An inaccessible
 root, failed hardware test or missed target produces a failing overall result.
