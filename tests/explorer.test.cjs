@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const script = fs.readFileSync(path.join(__dirname, '../static/explorer.js'), 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function explorer(automaticIndexing) {
+function explorer(automaticIndexing, resultOverrides = {}) {
   const images = [], checks = [], observers = [], timers = new Map();
   class Element extends EventTarget {
     constructor(tag) {
@@ -25,6 +25,10 @@ function explorer(automaticIndexing) {
     setAttribute(name, value) { this[name] = value; }
     removeAttribute(name) { delete this[name]; }
     querySelector(tag) { return this.children.find(child => child.tagName === tag); }
+    dispatchEvent(event) {
+      if (this.tagName === 'img' && event.type === 'load') { this.complete = true; this.naturalWidth = 120; }
+      return super.dispatchEvent(event);
+    }
   }
   const elements = Object.fromEntries(['explorer', 'explorerItems', 'explorerStatus',
     'explorerQuery', 'explorerSort', 'fileType', 'gridDensity', 'previousPage',
@@ -71,7 +75,7 @@ function explorer(automaticIndexing) {
       const page = Number(new URL(url, 'http://fixture').searchParams.get('page'));
       return {ok:true, json:async () => ({page, pages:3, total:206, state:'ready', items:
         Array.from({length:6}, (_, i) => ({name:`Page ${page} clip ${i}`, kind:'video', url:'/video',
-          size:10, thumb_url:`/thumbnail/${page}/${i}`, ready_url:`/ready/${page}/${i}`}))})};
+          size:10, thumb_url:`/thumbnail/${page}/${i}`, ready_url:`/ready/${page}/${i}`})), ...resultOverrides})};
     },
   });
   return {elements, images, checks, observers, timers, window,
@@ -90,32 +94,36 @@ test('visible thumbnails leave connections available for page navigation', async
   const e = explorer();
   await flush();
   e.intersect();
-  assert.equal(e.checks.length, 2, 'only two thumbnail requests may be in flight');
-  e.checks.forEach(check => check.respond(true));
-  await flush();
   assert.equal(e.images.filter(image => image.src).length, 2);
-  assert.equal(e.checks.length, 2, 'image downloads must finish before starting more checks');
+  assert.equal(e.checks.length, 0, 'cached images must load without a readiness round trip');
   e.images[0].dispatchEvent(new Event('load'));
   await flush();
-  assert.equal(e.checks.length, 3);
+  assert.equal(e.images.filter(image => image.src).length, 3);
   e.images[1].dispatchEvent(new Event('error'));
   await flush();
-  assert.equal(e.checks.length, 4, 'a failed image must release its slot');
+  assert.equal(e.checks.length, 1, 'a missing image must fall back to readiness checks');
+  e.checks[0].respond(false);
+  await flush();
+  assert.equal(e.images.filter(image => image.src).length, 3, 'waiting for generation must release its slot');
 });
 
 test('Next cancels old thumbnails and renders the next page immediately', async () => {
   const e = explorer();
   await flush();
   e.intersect();
+  e.images.slice(0, 2).forEach(image => image.dispatchEvent(new Event('error')));
+  await flush();
   const oldChecks = [...e.checks];
+  assert.equal(oldChecks.length, 2);
   e.elements.nextPage.onclick();
   await flush();
   assert.equal(e.elements.pageLabel.textContent, 'Page 2 of 3');
   assert.ok(oldChecks.every(check => check.signal?.aborted), 'old requests must be aborted');
   assert.equal(e.checks.length, 2, 'old queued checks must not start');
   e.intersect();
-  assert.equal(e.checks.length, 4);
+  assert.equal(e.images.slice(6).filter(image => image.src).length, 2);
   e.window.dispatchEvent(new Event('pagehide'));
+  assert.ok(e.images.every(image => !image.src));
   assert.ok(e.checks.every(check => check.signal.aborted));
 });
 
@@ -123,6 +131,8 @@ test('navigation cancels image downloads and scheduled thumbnail retries', async
   const e = explorer();
   await flush();
   e.intersect();
+  e.images.slice(0, 2).forEach(image => image.dispatchEvent(new Event('error')));
+  await flush();
   e.checks[0].respond(true);
   e.checks[1].respond(false);
   await flush();
@@ -135,4 +145,57 @@ test('navigation cancels image downloads and scheduled thumbnail retries', async
   for (const callback of e.timers.values()) callback();
   await flush();
   assert.equal(e.checks.length, count, 'retry timers from the previous page must not make requests');
+});
+
+test('missing thumbnails appear after generation and stop polling', async () => {
+  const e = explorer();
+  await flush();
+  e.intersect();
+  e.images[0].dispatchEvent(new Event('error'));
+  await flush();
+  assert.equal(e.images[0].hidden, true, 'failed images must keep the placeholder');
+  e.checks[0].respond(false);
+  await flush();
+  assert.equal(e.timers.size, 1);
+  e.images[1].dispatchEvent(new Event('load'));
+  e.images[2].dispatchEvent(new Event('load'));
+  await flush();
+  e.images[3].dispatchEvent(new Event('load'));
+  e.images[4].dispatchEvent(new Event('load'));
+  await flush();
+  e.images[5].dispatchEvent(new Event('load'));
+  await flush();
+  const [id, retry] = [...e.timers][0];
+  e.timers.delete(id); retry();
+  await flush();
+  e.checks[1].respond(true);
+  await flush();
+  e.images[0].dispatchEvent(new Event('load'));
+  await flush();
+  assert.equal(e.images[0].hidden, false);
+  assert.equal(e.checks.length, 2);
+  assert.equal(e.timers.size, 0);
+});
+
+test('search refresh keeps loaded images while adding matches, but reloads changed media', async () => {
+  const rows = [{name:'First', kind:'image', url:'/image', size:10, mtime:1, thumb_url:'/thumbnail/first', ready_url:'/ready/first'}];
+  const result = {items:rows, refreshing:true, version:'first'};
+  const e = explorer(undefined, result);
+  await flush(); e.intersect();
+  e.images[0].dispatchEvent(new Event('load'));
+  await flush();
+  const first = e.images[0];
+  rows.push({...rows[0], name:'Second', thumb_url:'/thumbnail/second', ready_url:'/ready/second'});
+  result.version = 'second';
+  [...e.timers.values()][0]();
+  await flush(); e.intersect();
+  assert.equal(e.images.length, 2, 'loaded images must be reused when new results arrive');
+  assert.equal(e.elements.explorerItems.children[0].children[0].children[0].children[0], first);
+  assert.equal(first.hidden, false);
+  assert.equal(first.src, '/thumbnail/first?v=first', 'a directory version change must not reload unchanged media');
+  rows[0].mtime = 2;
+  [...e.timers.values()].at(-1)();
+  await flush();
+  assert.notEqual(e.elements.explorerItems.children[0].children[0].children[0].children[0], first,
+    'changed source metadata must invalidate a loaded image');
 });

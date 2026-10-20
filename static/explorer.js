@@ -9,6 +9,7 @@
   const density = document.getElementById('gridDensity'), previous = document.getElementById('previousPage'), next = document.getElementById('nextPage');
   const csrf = document.querySelector('meta[name="lanstream-csrf"]').content;
   let controller, polling, debounce, sequence = 0, observer, stopped = false, state = {};
+  let thumbnailImages = new Map();
   function restore() {
     const params = new URLSearchParams(location.search);
     state = {page: Number(params.get('page')) || 1, q: params.get('q') || '', sort: params.get('sort') || 'name', direction: params.get('direction') || 'asc', scope: params.get('scope') || 'all', root: params.get('root') || explorer.dataset.root || '0', relative: params.get('relative') || explorer.dataset.relative, file_type: params.get('file_type') || 'all'};
@@ -73,6 +74,21 @@
       observer.unobserve(entry.target);
       const image = entry.target.querySelector('img'), deadline = Date.now() + 90000; let attempts = 0, retry;
       signal.addEventListener('abort', () => clearTimeout(retry), {once: true});
+      const loadImage = () => new Promise(resolve => {
+        if (stopped || signal.aborted || !image.isConnected) { resolve(false); return; }
+        const done = event => {
+          image.removeEventListener('load', done); image.removeEventListener('error', done);
+          signal.removeEventListener('abort', cancel);
+          const loaded = event?.type === 'load';
+          image.hidden = !loaded;
+          if (!loaded) image.removeAttribute('src');
+          resolve(loaded);
+        };
+        const cancel = () => done();
+        image.addEventListener('load', done, {once: true}); image.addEventListener('error', done, {once: true});
+        signal.addEventListener('abort', cancel, {once: true});
+        image.src = image.dataset.src + '?v=' + encodeURIComponent(result.version || 'cached');
+      });
       const check = async () => {
         if (stopped || signal.aborted || !image.isConnected) return;
         try {
@@ -81,29 +97,31 @@
           const ready = await response.json();
           if (signal.aborted || !image.isConnected) return;
           if (ready.ready) {
-            await new Promise(resolve => {
-              const done = () => {
-                image.removeEventListener('load', done); image.removeEventListener('error', done);
-                signal.removeEventListener('abort', cancel); resolve();
-              };
-              const cancel = () => { image.removeAttribute('src'); done(); };
-              image.addEventListener('load', done, {once: true}); image.addEventListener('error', done, {once: true});
-              signal.addEventListener('abort', cancel, {once: true});
-              image.src = image.dataset.src + '?v=' + encodeURIComponent(result.version || 'cached'); image.hidden = false;
-            });
+            await loadImage();
             return;
           }
           if (ready.failed) return;
         } catch (_) { /* Revisit to retry unavailable thumbnails. */ }
         if (!signal.aborted && Date.now() < deadline) retry = setTimeout(() => { thumbnails.push(check); drainThumbnails(); }, Math.min(1500, 250 * 2 ** Math.floor(++attempts / 4)));
-      }; thumbnails.push(check); drainThumbnails();
+      };
+      // Cached images need one request; only missing images need generation polling.
+      thumbnails.push(async () => { if (!await loadImage()) await check(); }); drainThumbnails();
     }), {rootMargin: '160px 0px'});
-    const fragment = document.createDocumentFragment();
+    const fragment = document.createDocumentFragment(), nextImages = new Map();
     for (const item of result.items) {
       const row = element('article', 'explorer-item'), link = element('a', 'item-main'); link.href = item.url;
       const preview = element('span', 'item-preview', item.kind.toUpperCase());
       if (item.kind === 'folder') { preview.textContent = ''; preview.append(element('span', 'folder-icon')); }
-      if (item.thumb_url) { const image = element('img'); image.alt = ''; image.hidden = true; image.dataset.src = item.thumb_url; image.dataset.ready = item.ready_url; preview.append(image); observer.observe(preview); }
+      if (item.thumb_url) {
+        const key = JSON.stringify([item.thumb_url, item.mtime, item.size]);
+        let image = thumbnailImages.get(key);
+        if (!image?.complete || !image.naturalWidth) {
+          image = element('img'); image.alt = ''; image.hidden = true;
+          image.dataset.src = item.thumb_url; image.dataset.ready = item.ready_url;
+          observer.observe(preview);
+        }
+        preview.append(image); nextImages.set(key, image);
+      }
       const label = element('span', 'item-label'); label.append(element('span', 'item-name', item.name));
       if (explorer.dataset.mode !== 'browse') label.append(element('span', 'item-location', item.location));
       link.append(preview, label, element('span', 'item-size', item.kind === 'folder' ? '—' : size(item.size)), element('span', 'item-date', item.mtime ? new Date(item.mtime * 1000).toLocaleString() : '—'), element('span', 'item-kind', item.kind));
@@ -119,7 +137,7 @@
       if (explorer.dataset.mode !== 'browse') { const folder = element('a', 'item-folder-link', 'Open folder'); folder.href = item.folder_url; actions.append(folder); }
       row.append(actions); fragment.append(row);
     }
-    items.replaceChildren(fragment);
+    items.replaceChildren(fragment); thumbnailImages = nextImages;
     const scanning = result.state === 'loading';
     status.textContent = scanning ? 'Reading this folder for the first time… SMB enumeration may take a while.' : result.error ? result.error + (result.version ? ' Showing the last cached snapshot.' : '') : result.state === 'stale' ? result.total.toLocaleString() + ' items · cached snapshot, refreshing in the background.' : result.total ? result.total.toLocaleString() + ' items' : 'No matching folders or supported files.';
     if (result.updated_at && !scanning) status.textContent += ' · Updated ' + new Date(result.updated_at * 1000).toLocaleString();

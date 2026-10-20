@@ -112,7 +112,11 @@ and therefore starts a new Favorites set for that profile.
 ## Thumbnails and media safety
 
 Visible/near-visible items request thumbnails automatically. Existing local thumbs and
-posters are reused. The queue holds at most 64 pending/active jobs, uses two
+posters are reused. The browser requests cached images directly and only polls
+for readiness when an image is missing. Folder and search updates keep already
+loaded thumbnails for unchanged files, so new results do not reload those images.
+At most two previews load at once; navigation cancels pending browser requests.
+The queue holds at most 64 pending/active jobs, uses two
 workers by default (`thumbnail_workers=1` selects one), prioritizes visible/detail work and
 retains useful jobs after navigation. High-priority posters can displace lower
 priority pending jobs. Background thumbnails pause during active playback;
