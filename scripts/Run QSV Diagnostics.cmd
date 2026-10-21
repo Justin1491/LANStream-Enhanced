@@ -8,10 +8,10 @@ if not exist "%existingInstall%\ffprobe.exe" goto missing
 set "PATH=%existingInstall%;%PATH%"
 set "LANSTREAM_CONFIG_FILE=%existingInstall%\config.txt"
 set "LANSTREAM_CACHE_DIR=%~dp0diagnostic-cache"
-set "LANSTREAM_PORT=8061"
+set "LANSTREAM_PORT=8062"
 set "LANSTREAM_HOST=0.0.0.0"
 set "LANSTREAM_TRANSCODER=qsv"
-echo Close the installed Enhanced app before continuing. Port 8060 is not used.
+echo Diagnostic server: port 8062. Existing ports 8060 and 8061 are not used.
 echo This build uses QSV only and a separate cache. Configuration is read in place.
 echo No process will be stopped automatically.
 echo.

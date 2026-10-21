@@ -291,6 +291,13 @@ class ExplorerRoutes(unittest.TestCase):
                 if low:
                     self.assertIn('2M', command)
 
+    def test_qsv_hls_forced_keyframes_are_idr_frames_for_segment_boundaries(self):
+        for low in (False, True):
+            command = self.server.transcode_command('qsv', self.root / 'clip.mkv', 1, 0, low, self.work / 'hls-idr')
+            self.assertIn('-forced_idr', command, 'QSV forced I frames must be random-access segment boundaries')
+            self.assertEqual(command[command.index('-forced_idr') + 1], '1')
+            self.assertEqual(command[command.index('-force_key_frames') + 1], 'expr:gte(t,n_forced*2)')
+
     def test_hls_rejects_nonfinite_start_and_reports_encoder_failure(self):
         from unittest.mock import MagicMock
         (self.root / 'clip.mkv').touch()

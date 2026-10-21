@@ -1876,6 +1876,9 @@ def transcode_command(
         cmd += ['-c:a', 'aac', '-b:a', '128k' if low else '160k', '-ac', '2']
 
     if hls_dir is not None:
+        if backend == 'qsv':
+            # QSV otherwise forces plain I frames, which HLS cannot cut on.
+            cmd += ['-forced_idr', '1']
         cmd += ['-force_key_frames', 'expr:gte(t,n_forced*2)']
         return cmd + [
             '-f', 'hls', '-hls_time', '2', '-hls_list_size', '6',

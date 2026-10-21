@@ -36,10 +36,16 @@ jobs:
           tests.test_app.ExplorerRoutes.test_explicit_qsv_diagnostics_never_run_a_software_encoder_test
           tests.test_app.ExplorerRoutes.test_hls_preparation_reports_spawn_errors_without_private_exception_text
           tests.test_app.ExplorerRoutes.test_hevc_sources_offer_normal_and_low_and_reject_removed_copy_mode
+          tests.test_app.ExplorerRoutes.test_qsv_hls_forced_keyframes_are_idr_frames_for_segment_boundaries
       - name: Check player and explorer
         run: node --test tests/player.test.cjs tests/explorer.test.cjs
       - name: Build application
         run: python -m PyInstaller --clean --noconfirm LANStream.spec
+      - name: Launch the frozen Windows app (no media tools or encoding)
+        shell: pwsh
+        run: |
+          $env:LANSTREAM_RUNTIME_EXE = (Resolve-Path 'dist/LANStream/LANStream.exe').Path
+          python -B -m unittest -v tests.test_windows_runtime
       - name: Package diagnostic instructions and identity
         shell: pwsh
         run: |
