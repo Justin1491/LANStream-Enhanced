@@ -18,6 +18,8 @@ LANStream runs on Linux through Docker or as a portable Windows application. It 
 
 Based on [candre23/LANStream](https://github.com/candre23/LANStream). See the [Enhanced operations guide](docs/enhanced-guide.md) for isolated port-8061 deployment, configuration, cache/favorite backups, benchmarks and rollback. For subsequent releases, use [Upgrade Enhanced.cmd](docs/n100-installer.md#updating-an-existing-enhanced-installation) to preserve configuration and Favorites with a backup and startup rollback. See [measured status](docs/status.md) for local verification and remaining N100/SMB checks. The existing production install must stay untouched.
 
+Continuing development in Codex on Windows? Start with the [Windows development handoff](docs/windows-development-handoff.md) for the verified QSV startup fix, results, code map, development setup and release/upgrade workflow.
+
 ## Why LANStream?
 
 Most home media servers are built around a managed library. That is ideal if you want posters, metadata matching, watch history, recommendations, user profiles, and a streaming-service-style interface.
