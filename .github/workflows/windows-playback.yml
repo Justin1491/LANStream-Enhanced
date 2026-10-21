@@ -39,6 +39,9 @@ jobs:
           tests.test_app.ExplorerRoutes.test_qsv_hls_forced_keyframes_are_idr_frames_for_segment_boundaries
       - name: Check player and explorer
         run: node --test tests/player.test.cjs tests/explorer.test.cjs
+      - name: Check process inspector and stop guards on Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\process_check_tests.ps1
       - name: Build application
         run: python -m PyInstaller --clean --noconfirm LANStream.spec
       - name: Launch the frozen Windows app (no media tools or encoding)
@@ -50,6 +53,8 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item 'scripts/Run QSV Diagnostics.cmd' 'dist/LANStream/'
+          Copy-Item 'scripts/Check-LANStreamProcesses.ps1' 'dist/LANStream/'
+          Copy-Item 'docs/n100-process-check.md' 'dist/LANStream/README-PROCESS-CHECK.md'
           Copy-Item 'docs/windows-playback-diagnostics.md' 'dist/LANStream/README-DIAGNOSTICS.md'
           Copy-Item 'LICENSE' 'dist/LANStream/'
           Copy-Item 'THIRD_PARTY_LICENSES.md' 'dist/LANStream/'

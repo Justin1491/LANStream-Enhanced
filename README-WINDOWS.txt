@@ -22,6 +22,11 @@ The cache now contains durable Favorites; back it up before upgrading.
 
 Routine updates
 ---------------
+If an old copy may still be using 8061, run scripts\Check-LANStreamProcesses.ps1
+on the N100. It reports paths/build fingerprints and lets you select unwanted
+instances to stop, with protection for port 8060 and the original installation.
+See docs/n100-process-check.md for instructions and reference-build comparison.
+
 Extract the latest N100 setup ZIP and run Upgrade Enhanced.cmd. It preserves
 the existing config.txt and complete cache, retains a dated backup of the old
 installation, and restores it if the new app fails to start. Install Enhanced.cmd
