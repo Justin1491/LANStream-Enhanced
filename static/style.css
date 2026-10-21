@@ -162,3 +162,6 @@ button.viewer-nav:disabled{opacity:.2;cursor:default}
 .folder-card strong,.crumbs a{min-width:0;overflow-wrap:anywhere;word-break:break-word}
 .global-nav{display:flex;gap:14px;align-items:center;margin-left:auto;padding:0 16px}.global-nav a{font-size:.9rem}@media(max-width:700px){.global-nav{gap:8px;padding:0 6px}.global-nav a{font-size:.8rem}}
 .player-top{grid-template-columns:auto minmax(0,1fr) auto auto}.favorite-action{cursor:pointer;min-width:40px;min-height:40px}.favorite-action[aria-pressed=true]{color:#f4c875}.player-top .favorite-message:empty{display:none}.player-top .favorite-message:not(:empty){position:absolute;top:54px;right:12px;z-index:30;background:var(--surface);padding:8px}
+#playbackDiagnostics{margin:12px auto;padding:12px;max-width:960px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted)}
+#playbackDiagnostics summary{cursor:pointer}
+#playbackReport{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;font-size:12px}

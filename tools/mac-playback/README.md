@@ -49,7 +49,8 @@ Open `http://127.0.0.1:8766/` in Safari. The wrapper creates an isolated
 disables automatic indexing, and selects software encoding. It leaves your
 normal LANStream installation/configuration alone. Stop it with Ctrl+C.
 
-Test Normal, Low Bandwidth, and the optional H.265 mode. Record `video.currentSrc`
+Test Normal and Low Bandwidth. HEVC sources use H.264 transcoding; the optional
+H.265 video-copy mode has been removed. Record `video.currentSrc`
 and network requests: generated playback in native-HLS browsers should request
 an `.m3u8` playlist, initialization MP4, and `.m4s` segments. Other browsers use
 the `/video.mp4` endpoint. Compatible MP4 files can play directly in Normal mode.

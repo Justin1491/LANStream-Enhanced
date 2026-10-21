@@ -31,7 +31,6 @@
 <div class="quality-mode" role="radiogroup" aria-label="Stream quality">
 <label><input type="radio" name="qualityMode" value="normal" checked> Normal</label>
 <label><input type="radio" name="qualityMode" value="low"> Low Bandwidth</label>
-{% if hevc %}<label title="Keep original H.265 video; requires HEVC browser support"><input type="radio" name="qualityMode" value="hevc"> H.265</label>{% endif %}
 </div>
 {% if audios %}<select id="audioSelect" title="Audio" aria-label="Audio track">{% for a in audios %}
 <option value="{{ a.index }}">{{ a.language }} · {{ a.codec }}{% if a.title %} · {{ a.title }}{% endif %}</option>
@@ -46,6 +45,7 @@
 </div>
 </div>
 </div>
+<details id="playbackDiagnostics" hidden><summary>Playback details</summary><pre id="playbackReport"></pre></details>
 <script>
 const nativePlayback={{ "true" if native else "false" }};
 const totalDuration={{ duration }};
@@ -63,30 +63,67 @@ const hlsBase={{ url_for('hls_media',root_index=root_index,relpath=relpath)|tojs
 const hlsToken={{ hls_token|tojson }};
 const nativeHls=!!(video.canPlayType&&video.canPlayType('application/vnd.apple.mpegurl'));
 const subtitleBase={{ url_for('subtitle',root_index=root_index,relpath=relpath)|tojson }};
-let logicalOffset=0,started=false,dragging=false,lowBandwidth=false,hevcCopy=false,controlsTimer=null,hlsSerial=0,hlsResumeAt=null;
+let logicalOffset=0,started=false,dragging=false,lowBandwidth=false,controlsTimer=null,hlsSerial=0,hlsResumeAt=null,preparing=false,lastReport=null,needsPlayGesture=false;
 
 function fmt(sec){sec=Math.max(0,Math.floor(sec||0));const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h?`${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${m}:${String(s).padStart(2,"0")}`;}
-function usingDirect(){return nativePlayback&&!lowBandwidth&&!hevcCopy;}
-function logicalTime(){return usingDirect()?(video.currentTime||0):logicalOffset+(video.currentTime||0);}
+function usingDirect(){return nativePlayback&&!lowBandwidth;}
+function logicalTime(){return preparing?logicalOffset:usingDirect()?(video.currentTime||0):logicalOffset+(video.currentTime||0);}
 function audio(){return audioSelect?audioSelect.value:"";}
 function msg(t){message.textContent=t;message.classList.toggle("hidden",!t);}
-function playbackRejected(error){if(error.name==="NotAllowedError")msg("Tap Play to start playback.");}
+function playbackRejected(error){if(error.name==="NotAllowedError"){needsPlayGesture=true;msg("Tap Play to start playback.");}}
 function subtitles(start){
  video.querySelectorAll("track").forEach(t=>t.remove());
  if(!subtitleSelect||!subtitleSelect.value)return;
  const t=document.createElement("track");t.kind="subtitles";t.label="Selected";t.srclang="en";t.default=true;
  t.src=subtitleBase+"?stream="+encodeURIComponent(subtitleSelect.value)+"&start="+encodeURIComponent(start);video.appendChild(t);
 }
+function playbackReport(report){
+ lastReport=report;
+ const details=document.getElementById('playbackDiagnostics'),output=document.getElementById('playbackReport');
+ details.hidden=false;
+ output.textContent=JSON.stringify({server:report,browser:{readyState:video.readyState,
+  width:video.videoWidth||0,height:video.videoHeight||0,error:video.error?video.error.code:null}},null,2);
+}
+async function prepareHls(url,generation){
+ const deadline=Date.now()+90000;
+ try{
+  while(generation===hlsSerial){
+   const response=await fetch(url+'&prepare=1',{cache:'no-store'});
+   const report=await response.json();
+   if(generation!==hlsSerial)return;
+   playbackReport(report);
+   if(!response.ok||report.state==='failed'){
+    preparing=false;msg('The server encoder failed to start playback. Open Playback details for the failure.');return;
+   }
+   if(report.state==='ready'){
+    preparing=false;video.src=url;video.load();video.play().catch(playbackRejected);return;
+   }
+   if(Date.now()>=deadline){
+    preparing=false;msg('The server has not published a playable stream after 90 seconds. Open Playback details.');return;
+   }
+   msg('Preparing playback…');
+   await new Promise(resolve=>window.setTimeout(resolve,1000));
+  }
+ }catch(_){
+  if(generation===hlsSerial){preparing=false;msg('Unable to check playback startup. Reload the page and try again.');}
+ }
+}
 function transcode(at){
- hlsResumeAt=null;
- logicalOffset=Math.max(0,Math.min(totalDuration,at));subtitles(logicalOffset);msg(hevcCopy?"Starting H.265 stream…":"Starting transcoded stream…");
- const base=nativeHls?hlsBase:transcodeBase,stream=nativeHls?"stream="+hlsToken+"-"+(++hlsSerial)+"&":"";
- video.src=base+"?"+stream+"start="+encodeURIComponent(logicalOffset)+"&audio="+encodeURIComponent(audio())+(lowBandwidth?"&low=1":"")+(hevcCopy?"&hevc=1":"");
+ hlsResumeAt=null;needsPlayGesture=false;
+ logicalOffset=Math.max(0,Math.min(totalDuration,at));subtitles(logicalOffset);msg("Starting transcoded stream…");
+ const generation=++hlsSerial,base=nativeHls?hlsBase:transcodeBase,stream=nativeHls?"stream="+hlsToken+"-"+generation+"&":"";
+ const url=base+"?"+stream+"start="+encodeURIComponent(logicalOffset)+"&audio="+encodeURIComponent(audio())+(lowBandwidth?"&low=1":"");
+ if(nativeHls){
+  preparing=true;if(video.pause)video.pause();hlsResumeAt=null;video.removeAttribute('src');video.load();
+  prepareHls(url,generation);return;
+ }
+ video.src=url;
  video.load();video.play().catch(playbackRejected);
 }
 function start(at=0){
  hlsResumeAt=null;
  if(usingDirect()){
+  ++hlsSerial;preparing=false;
   if(!started){subtitles(0);video.src=nativeUrl;video.load();}
   const playAt=()=>{try{video.currentTime=at;}catch(_){} video.play().catch(playbackRejected);};
   if(video.readyState>=1)playAt();else video.addEventListener("loadedmetadata",playAt,{once:true});
@@ -127,14 +164,14 @@ function updateFullscreenState(){
  showControls();
 }
 
-togglePlay.onclick=()=>{showControls();if(!started)return start(0);if(video.paused&&nativeHls&&!usingDirect())return go(video.ended?0:logicalTime());video.paused?video.play().catch(playbackRejected):video.pause();};
+togglePlay.onclick=()=>{showControls();if(preparing)return;if(!started)return start(0);if(needsPlayGesture){needsPlayGesture=false;video.play().catch(playbackRejected);return;}if(video.paused&&nativeHls&&!usingDirect())return go(video.ended?0:logicalTime());video.paused?video.play().catch(playbackRejected):video.pause();};
 back30.onclick=()=>{showControls();go(logicalTime()-30);};
 forward30.onclick=()=>{showControls();go(logicalTime()+30);};
-video.addEventListener("playing",()=>{msg("");togglePlay.textContent="Pause";scheduleControlsHide();});
-video.addEventListener("pause",()=>{if(nativeHls&&!usingDirect()&&started&&video.readyState>=1)hlsResumeAt=logicalTime();togglePlay.textContent="Play";showControls();clearControlsTimer();});
+video.addEventListener("playing",()=>{needsPlayGesture=false;msg("");togglePlay.textContent="Pause";scheduleControlsHide();});
+video.addEventListener("pause",()=>{if(!preparing&&nativeHls&&!usingDirect()&&started&&video.readyState>=1)hlsResumeAt=logicalTime();togglePlay.textContent="Play";showControls();clearControlsTimer();});
 video.addEventListener("play",()=>{if(hlsResumeAt!==null){const at=hlsResumeAt;hlsResumeAt=null;go(at>=totalDuration-0.1?0:at);}});
 video.addEventListener("waiting",()=>{if(started&&!video.paused)msg("Buffering…");});
-video.addEventListener("error",()=>{const e=video.error;msg("Playback failed"+(e?` (browser error ${e.code})`:"")+(hevcCopy?". Try Normal if this browser cannot play H.265":"")+". Check /transcoder-status and the LANStream container log.");});
+video.addEventListener("error",()=>{if(preparing)return;const e=video.error;msg("Playback failed"+(e?` (browser error ${e.code})`:"")+". Open Playback details or /transcoder-status.");if(lastReport)playbackReport(lastReport);});
 seek.oninput=()=>{dragging=true;showControls();currentLabel.textContent=fmt(Number(seek.value));};
 seek.onchange=()=>{dragging=false;go(Number(seek.value));scheduleControlsHide();};
 video.addEventListener("timeupdate",()=>{if(dragging)return;const t=Math.min(totalDuration,logicalTime());seek.value=t;currentLabel.textContent=fmt(t);});
@@ -144,8 +181,8 @@ fullscreenTop.onclick=toggleFullscreen;
 document.querySelectorAll('input[name="qualityMode"]').forEach(radio=>{
  radio.addEventListener("change",()=>{
   showControls();if(!radio.checked)return;
-  const wantLow=radio.value==="low",wantHevc=radio.value==="hevc";if(wantLow===lowBandwidth&&wantHevc===hevcCopy)return;
-  const t=logicalTime();lowBandwidth=wantLow;hevcCopy=wantHevc;started=false;logicalOffset=0;start(t);
+  const wantLow=radio.value==="low";if(wantLow===lowBandwidth)return;
+  const t=logicalTime();lowBandwidth=wantLow;started=false;logicalOffset=0;start(t);
  });
 });
 if(audioSelect)audioSelect.onchange=()=>{showControls();if(started&&!usingDirect())go(logicalTime());};

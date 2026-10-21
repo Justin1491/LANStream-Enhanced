@@ -48,6 +48,7 @@ RESOURCE_DIR = resource_dir()
 CONFIG_FILE = Path(os.environ.get("LANSTREAM_CONFIG_FILE", str(APP_DIR / "config.txt")))
 CACHE_DIR = Path(os.environ.get("LANSTREAM_CACHE_DIR", str(APP_DIR / "cache")))
 SESSION_SECRET = os.environ.get("LANSTREAM_SESSION_SECRET") or secrets.token_hex(32)
+SERVER_INSTANCE = secrets.token_hex(6)
 VAAPI_DEVICE = os.environ.get("LANSTREAM_VAAPI_DEVICE", "/dev/dri/renderD128")
 # Serialize cache publication and PyMuPDF work across viewer/thumbnail threads.
 VIEWER_RENDER_LOCK = threading.Lock()
@@ -132,6 +133,27 @@ app = Flask(
     static_folder=str(RESOURCE_DIR / "static"),
 )
 app.secret_key = SESSION_SECRET
+
+
+@lru_cache(maxsize=1)
+def playback_server_identity():
+    """Identify the running binary/source without exposing installation paths."""
+    frozen = getattr(sys, 'frozen', False)
+    paths = [Path(sys.executable)] if frozen else [RESOURCE_DIR / name for name in
+             ('app.py', 'hls_streams.py', 'launcher.py', 'templates/player.html')]
+    digest = hashlib.sha256()
+    try:
+        for path in paths:
+            if not frozen:
+                digest.update(path.name.encode())
+            with path.open('rb') as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                    digest.update(chunk)
+        build = digest.hexdigest()
+    except OSError:
+        build = 'unknown'
+    return dict(build=build, kind='executable' if frozen else 'source',
+                instance=SERVER_INSTANCE, platform=sys.platform)
 
 
 class StreamTracker:
@@ -869,27 +891,20 @@ def run_encoder_test(encoder: str, extra_before_input=None, video_filter=None) -
 
 
 def available_transcoder_tests() -> list[tuple[str, str, tuple[bool, str]]]:
-    tests = []
-
+    candidates = []
     if os.name == "nt":
-        tests.append(("qsv", "Intel QSV", run_encoder_test("h264_qsv", video_filter="format=nv12")))
-        tests.append(("nvenc", "NVIDIA NVENC", run_encoder_test("h264_nvenc", video_filter="format=nv12")))
-        tests.append(("amf", "AMD AMF", run_encoder_test("h264_amf", video_filter="format=nv12")))
+        candidates += [("qsv", "Intel QSV", "h264_qsv", dict(video_filter="format=nv12")),
+                       ("nvenc", "NVIDIA NVENC", "h264_nvenc", dict(video_filter="format=nv12")),
+                       ("amf", "AMD AMF", "h264_amf", dict(video_filter="format=nv12"))]
     else:
         if Path(VAAPI_DEVICE).exists():
-            tests.append((
-                "vaapi",
-                "VAAPI",
-                run_encoder_test(
-                    "h264_vaapi",
-                    extra_before_input=["-vaapi_device", VAAPI_DEVICE],
-                    video_filter="format=nv12,hwupload",
-                ),
-            ))
-        tests.append(("nvenc", "NVIDIA NVENC", run_encoder_test("h264_nvenc", video_filter="format=nv12")))
-
-    tests.append(("software", "Software libx264", run_encoder_test("libx264")))
-    return tests
+            candidates.append(("vaapi", "VAAPI", "h264_vaapi", dict(
+                extra_before_input=["-vaapi_device", VAAPI_DEVICE], video_filter="format=nv12,hwupload")))
+        candidates.append(("nvenc", "NVIDIA NVENC", "h264_nvenc", dict(video_filter="format=nv12")))
+    candidates.append(("software", "Software libx264", "libx264", {}))
+    return [(key, label, run_encoder_test(encoder, **options))
+            for key, label, encoder, options in candidates
+            if TRANSCODER_PREFERENCE == 'auto' or key == TRANSCODER_PREFERENCE]
 
 
 _transcoder_cache = None
@@ -1491,14 +1506,13 @@ def player(root_index, relpath):
     if not is_video(source):
         abort(404)
     info = probe(source)
-    videos, audios, subtitles = stream_lists(info)
+    _, audios, subtitles = stream_lists(info)
     d = duration_seconds(info)
     return render_template(
         "player.html", root_index=root_index, relpath=relpath,
         filename=source.name, duration=d, duration_text=fmt_duration(d),
         audios=audios, subtitles=subtitles,
         native=direct_playback_ok(source, info, audios),
-        hevc=bool(videos and videos[0]["codec"] == "hevc"),
         hls_token=secrets.token_hex(16),
     )
 
@@ -1769,12 +1783,9 @@ def transcode_command(
 ) -> list[str]:
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "error"]
     if hls_dir is not None:
-        cmd += ["-nostdin", "-readrate", "1"]
+        cmd += ["-nostdin", "-nostats", "-stats_period", "1", "-progress", "progress.log", "-readrate", "1"]
 
-    if backend == "hevc-copy":
-        # shortcut: copy seeks land on nearby keyframes; use Normal for precise seeking.
-        cmd += ["-noaccurate_seek"]
-    elif backend == "vaapi":
+    if backend == "vaapi":
         cmd += ["-vaapi_device", VAAPI_DEVICE]
 
     cmd += [
@@ -1788,11 +1799,7 @@ def transcode_command(
     else:
         cmd += ["-an"]
 
-    if backend == "hevc-copy":
-        if low:
-            raise ValueError("HEVC video copy cannot resize or reduce the video bitrate")
-        cmd += ["-c:v", "copy", "-tag:v", "hvc1"]
-    elif backend == "vaapi":
+    if backend == "vaapi":
         cmd += [
             "-vf", "format=nv12,hwupload",
             "-c:v", "h264_vaapi",
@@ -1869,8 +1876,7 @@ def transcode_command(
         cmd += ['-c:a', 'aac', '-b:a', '128k' if low else '160k', '-ac', '2']
 
     if hls_dir is not None:
-        if backend != 'hevc-copy':
-            cmd += ['-force_key_frames', 'expr:gte(t,n_forced*2)']
+        cmd += ['-force_key_frames', 'expr:gte(t,n_forced*2)']
         return cmd + [
             '-f', 'hls', '-hls_time', '2', '-hls_list_size', '6',
             '-hls_delete_threshold', '3', '-hls_flags', 'delete_segments+temp_file',
@@ -1897,14 +1903,8 @@ def transcode(root_index, relpath, hls=False):
         abort(404)
 
     if request.args.get("hevc") == "1":
-        if request.args.get("low") == "1":
-            abort(400, description="Choose H.265 or Low Bandwidth, not both")
-        videos, _, _ = stream_lists(probe(source))
-        if not videos or videos[0]["codec"] != "hevc":
-            abort(400, description="H.265 playback requires an HEVC source")
-        transcoder = {"key": "hevc-copy", "label": "H.265 video copy", "ok": True}
-    else:
-        transcoder = selected_transcoder()
+        abort(400, description="H.265 mode has been removed. Use Normal or Low Bandwidth.")
+    transcoder = selected_transcoder()
     if not transcoder["ok"]:
         app.logger.error("No usable transcoder: %s", transcoder["detail"])
         return Response(
@@ -1936,6 +1936,10 @@ def transcode(root_index, relpath, hls=False):
                 lambda directory: transcode_command(transcoder['key'], source, audio_index, start, low, directory),
                 source=source, backend=transcoder['key'], start=start,
             )
+            if request.args.get('prepare') == '1':
+                report = stream.diagnostics()
+                report['server'] = playback_server_identity()
+                return jsonify(report), 503 if report['state'] == 'failed' else 200
             playlist = stream.wait_for('index.m3u8').read_text(encoding='utf-8')
             if stream.process.poll() not in (None, 0):
                 raise RuntimeError('HLS encoder exited with an error')
@@ -1943,6 +1947,10 @@ def transcode(root_index, relpath, hls=False):
             abort(400, description=str(exc))
         except (OSError, TimeoutError, RuntimeError) as exc:
             app.logger.error('HLS startup failed: %s', stream.error_detail() if stream else str(exc))
+            if request.args.get('prepare') == '1':
+                return jsonify(state='failed', phase='process_start', backend=transcoder['key'],
+                               error_type=type(exc).__name__, errno=getattr(exc, 'errno', None),
+                               winerror=getattr(exc, 'winerror', None), server=playback_server_identity()), 503
             return Response('Unable to start HLS playback. Check the server log.', status=503, mimetype='text/plain')
 
         def segment_url(name):
@@ -2092,6 +2100,7 @@ def transcoder_status_payload(force_refresh: bool = False) -> dict[str, Any]:
         "transcoder_ok": status["ok"],
         "backend": status["label"],
         "preference": TRANSCODER_PREFERENCE,
+        "server": playback_server_identity(),
         "ffmpeg": FFMPEG,
         "ffprobe": FFPROBE,
         "vaapi_device": VAAPI_DEVICE if os.name != "nt" else None,

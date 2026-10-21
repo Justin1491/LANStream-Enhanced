@@ -202,18 +202,6 @@ class ExplorerRoutes(unittest.TestCase):
         self.assertEqual(command[command.index('-ss') + 1], '12.500')
         self.assertIn('0:2', command)
 
-    def test_hevc_copy_command_preserves_video_and_rejects_scaling(self):
-        command = self.server.transcode_command('hevc-copy', self.root / 'clip.mkv', 2, 12.5)
-        self.assertEqual(command[command.index('-c:v') + 1], 'copy')
-        self.assertEqual(command[command.index('-tag:v') + 1], 'hvc1')
-        self.assertEqual(command[command.index('-ss') + 1], '12.500')
-        self.assertIn('0:2', command)
-        self.assertIn('aac', command)
-        self.assertIn('-noaccurate_seek', command)
-        self.assertNotIn('-vf', command)
-        with self.assertRaises(ValueError):
-            self.server.transcode_command('hevc-copy', self.root / 'clip.mkv', 2, 0, low=True)
-
     def test_transcoded_player_url_identifies_mp4_and_preserves_source_path(self):
         import io
         import json
@@ -231,7 +219,7 @@ class ExplorerRoutes(unittest.TestCase):
         stream_url = json.loads(match.group(1))
         self.assertTrue(stream_url.endswith('/video.mp4'), stream_url)
 
-        for mode in ('', '&low=1', '&hevc=1'):
+        for mode in ('', '&low=1'):
             with self.subTest(mode=mode):
                 proc = MagicMock()
                 proc.stdout = io.BytesIO(b'fixture-mp4')
@@ -247,42 +235,33 @@ class ExplorerRoutes(unittest.TestCase):
                     self.assertEqual(response.data, b'fixture-mp4')
                     response.close()
                     command = popen.call_args.args[0]
-                    self.assertEqual(command[command.index('-i') + 1], str(source))
+                    self.assertEqual(command[command.index('-i') + 1], str(source.resolve()))
+                    self.assertEqual(command[command.index('-c:v') + 1], 'libx264')
                     self.assertEqual(command[command.index('-ss') + 1], '12.500')
                     self.assertIn('0:1', command)
         self.assertEqual(self.server.app.test_client().get(stream_url).status_code, 302)
         self.assertEqual(self.client.get('/stream/0/Private/Hidden.mp4/video.mp4').status_code, 404)
 
-    def test_hevc_playback_validates_source_and_bypasses_hardware_encoder(self):
-        import io
-        from unittest.mock import MagicMock
+    def test_hevc_sources_offer_normal_and_low_and_reject_removed_copy_mode(self):
+        import re
         (self.root / 'clip.mkv').touch()
         info = {'streams': [
             {'index': 0, 'codec_type': 'video', 'codec_name': 'hevc'},
             {'index': 1, 'codec_type': 'audio', 'codec_name': 'aac'},
         ], 'format': {'duration': '60'}}
-        proc = MagicMock()
-        proc.stdout = io.BytesIO(b'fixture-mp4')
-        proc.stderr = io.BytesIO()
-        proc.poll.return_value = 0
-        proc.returncode = 0
-        with patch.object(self.server, 'probe', return_value=info), \
-                patch.object(self.server, 'selected_transcoder', side_effect=AssertionError('HEVC copy must not select an encoder')), \
-                patch.object(self.server.subprocess, 'Popen', return_value=proc) as popen:
+        with patch.object(self.server, 'probe', return_value=info):
             page = self.client.get('/play/0/clip.mkv')
-            self.assertIn(b'value="hevc"', page.data)
-            response = self.client.get('/transcode/0/clip.mkv?hevc=1&audio=1&start=12.5')
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.content_type, 'video/mp4')
-            self.assertEqual(response.data, b'fixture-mp4')
-            response.close()
-            self.assertIn('hvc1', popen.call_args.args[0])
-            popen.reset_mock()
-            self.assertEqual(self.client.get('/transcode/0/clip.mkv?hevc=1&low=1').status_code, 400)
-            info['streams'][0]['codec_name'] = 'h264'
-            self.assertNotIn(b'value="hevc"', self.client.get('/play/0/clip.mkv').data)
-            self.assertEqual(self.client.get('/transcode/0/clip.mkv?hevc=1').status_code, 400)
-            popen.assert_not_called()
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(re.findall(rb'name="qualityMode" value="([^"]+)"', page.data),
+                         [b'normal', b'low'])
+        with patch.object(self.server, 'selected_transcoder',
+                          side_effect=AssertionError('Removed mode must not start an encoder')):
+            for route in ('/transcode/0/clip.mkv', '/stream/0/clip.mkv/video.mp4',
+                          '/hls/0/clip.mkv/index.m3u8'):
+                with self.subTest(route=route):
+                    response = self.client.get(route + '?hevc=1&audio=1&start=0')
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn(b'Normal or Low Bandwidth', response.data)
 
     def test_low_bandwidth_command_uses_configured_bitrate_and_safe_scale(self):
         command = self.server.transcode_command('qsv', self.root / 'Café Clip 2.mp4', 0, 0, low=True)
@@ -296,10 +275,10 @@ class ExplorerRoutes(unittest.TestCase):
                 if '-rc' in command:
                     self.assertNotEqual(command[command.index('-rc') + 1], 'cqp')
 
-    def test_hls_commands_keep_qsv_low_bitrate_and_hevc_copy(self):
+    def test_hls_commands_keep_qsv_low_bitrate_and_software_encoding(self):
         directory = self.work / 'hls-command'
         for backend, low, codec in [('qsv', False, 'h264_qsv'), ('qsv', True, 'h264_qsv'),
-                                     ('software', True, 'libx264'), ('hevc-copy', False, 'copy')]:
+                                     ('software', True, 'libx264'), ('software', False, 'libx264')]:
             with self.subTest(backend=backend, low=low):
                 command = self.server.transcode_command(backend, self.root / 'clip.mkv', None, 7, low, directory)
                 self.assertEqual(command[command.index('-c:v') + 1], codec)
@@ -308,11 +287,9 @@ class ExplorerRoutes(unittest.TestCase):
                 self.assertIn('-an', command)
                 self.assertNotIn('pipe:1', command)
                 self.assertEqual(command[-1], str(directory / 'index.m3u8'))
-                self.assertEqual('-force_key_frames' in command, backend != 'hevc-copy')
+                self.assertIn('-force_key_frames', command)
                 if low:
                     self.assertIn('2M', command)
-                if backend == 'hevc-copy':
-                    self.assertEqual(command[command.index('-tag:v') + 1], 'hvc1')
 
     def test_hls_rejects_nonfinite_start_and_reports_encoder_failure(self):
         from unittest.mock import MagicMock
@@ -330,6 +307,85 @@ class ExplorerRoutes(unittest.TestCase):
             response = self.client.get(url)
             self.assertEqual(response.status_code, 503)
             self.assertNotIn(b'fixture encoder failed', response.data)
+
+    def test_hls_preparation_waits_without_a_media_503_and_reuses_encoder(self):
+        import json
+        import sys
+        import time
+        from hls_streams import HLSStreams
+        (self.root / 'clip.mkv').touch()
+        streams = HLSStreams(self.work / 'hls-preparation', self.server.stream_tracker)
+        token = 'c' * 32 + '-1'
+        url = '/hls/0/clip.mkv/index.m3u8?stream=' + token + '&start=0&audio=1'
+        commands = []
+
+        def command(backend, source, audio, start, low, directory):
+            commands.append(backend)
+            # A controlled publisher, not a software encoder. Release it only after
+            # the first readiness request has returned to the browser.
+            code = ("import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
+                    "exec(\"while not (p/'release').exists(): time.sleep(.01)\"); "
+                    "(p/'init.mp4').write_bytes(b'init'); "
+                    "(p/'segment000000.m4s').write_bytes(b'segment'); "
+                    "(p/'index.m3u8').write_text('#EXTM3U\\n#EXT-X-MAP:URI=\"init.mp4\"\\n"
+                    "#EXTINF:2,\\nsegment000000.m4s\\n')")
+            return [sys.executable, '-c', code, str(directory)]
+
+        try:
+            with patch.object(self.server, 'hls_streams', streams), \
+                    patch.object(self.server, 'selected_transcoder', return_value={
+                        'key': 'qsv', 'label': 'Intel QSV', 'ok': True,
+                    }), patch.object(self.server, 'transcode_command', side_effect=command):
+                began = time.monotonic()
+                response = self.client.get(url + '&prepare=1')
+                self.assertEqual(response.status_code, 200)
+                self.assertLess(time.monotonic() - began, 2, 'Readiness must not wait for a playlist')
+                report = response.get_json()
+                self.assertEqual(report['state'], 'starting')
+                self.assertEqual(report['backend'], 'qsv')
+                self.assertIn('build', report['server'])
+                self.assertIn('instance', report['server'])
+                self.assertNotIn(str(self.root), json.dumps(report))
+                stream = streams.lookup(token, (self.root / 'clip.mkv').resolve())
+                (stream.directory / 'release').touch()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    report = self.client.get(url + '&prepare=1').get_json()
+                    if report['state'] == 'ready':
+                        break
+                    time.sleep(.01)
+                self.assertEqual(report['state'], 'ready')
+                self.assertEqual(self.client.get(url).status_code, 200)
+                self.assertEqual(commands, ['qsv'], 'Readiness polling must reuse the same encoder')
+                self.assertEqual(self.server.app.test_client().get(url + '&prepare=1').status_code, 302)
+                self.assertEqual(self.client.get(url.replace('/clip.mkv/', '/Private/Hidden.mp4/') + '&prepare=1').status_code, 404)
+        finally:
+            streams.close()
+
+    def test_explicit_qsv_diagnostics_never_run_a_software_encoder_test(self):
+        from types import SimpleNamespace
+        with patch.object(self.server, 'os', SimpleNamespace(name='nt')), \
+                patch.object(self.server, 'TRANSCODER_PREFERENCE', 'qsv'), \
+                patch.object(self.server, 'run_encoder_test', return_value=(True, 'fixture')) as encode:
+            results = self.server.available_transcoder_tests()
+        self.assertEqual([call.args[0] for call in encode.call_args_list], ['h264_qsv'])
+        self.assertEqual([result[0] for result in results], ['qsv'])
+
+    def test_hls_preparation_reports_spawn_errors_without_private_exception_text(self):
+        from unittest.mock import Mock
+        (self.root / 'clip.mkv').touch()
+        streams = Mock()
+        streams.get.side_effect = PermissionError(13, 'private failure', 'private-server-path')
+        with patch.object(self.server, 'hls_streams', streams), \
+                patch.object(self.server, 'selected_transcoder', return_value={
+                    'key': 'qsv', 'label': 'Intel QSV', 'ok': True,
+                }), patch.object(self.server.app.logger, 'error'):
+            response = self.client.get('/hls/0/clip.mkv/index.m3u8?stream=' + 'a' * 32 + '-1&prepare=1')
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()['phase'], 'process_start')
+        self.assertEqual(response.get_json()['errno'], 13)
+        self.assertEqual(response.get_json()['error_type'], 'PermissionError')
+        self.assertNotIn(b'private', response.data)
 
     def test_hls_playlist_serves_completed_segments_with_ranges_and_scope_checks(self):
         import re

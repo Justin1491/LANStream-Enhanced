@@ -44,20 +44,15 @@ root/profile changes apply to later requests. Environment variables for config,
 cache, port, session secret and transcoder remain supported. Do not share logs
 or config files containing passwords or private media paths.
 
-## Try H.265 playback
+## Playback quality
 
-For HEVC/H.265 sources, including Media Optimizer MKV output, select **H.265**
-in the player to keep the original video and repackage it into an MP4 stream
-tagged hvc1. The selected audio is converted to stereo AAC. No video encoder
-is needed, and the source file is never changed. This mode requires an HEVC
-capable browser/device; use **Normal** if playback fails. It preserves the
-original video bitrate, resolution and HDR characteristics; it does not tone map
-HDR for SDR displays. Seeking lands near keyframes, keeping audio and video
-together; use Normal for precise seeking.
+The player offers **Normal** and **Low Bandwidth**. HEVC/H.265 source files,
+including MKV files, use H.264 transcoding with stereo AAC audio. The original
+files are never changed. The experimental H.265 video-copy mode has been removed.
 
 Browsers with native HLS support, including Safari, receive generated playback
 as a playlist and short MP4 segments. This applies to MKV playback and to
-**Low Bandwidth** or **H.265** for any supported source. Compatible MOV/MP4 files
+**Low Bandwidth** for any supported source. Compatible MOV/MP4 files
 still play directly in Normal mode. Other browsers retain streamed MP4 delivery
 through URLs ending in `/video.mp4`. The original filename and media stay unchanged.
 
@@ -65,9 +60,12 @@ through URLs ending in `/video.mp4`. The original filename and media stay unchan
 Quick Sync when selected. HLS delivery does not change the encoder. Select Low
 Bandwidth manually for a slower connection; this release does not automatically
 switch quality. Cellular access still requires a private VPN to the server.
-H.265 keeps the source bitrate and uses no video encoder.
 
 HLS encoders run near playback speed with a short temporary segment window.
+Safari waits for readiness before loading a generated playlist. **Playback
+details** exposes scoped startup progress, errors and build/instance identity;
+see [Windows startup diagnostics](windows-playback-diagnostics.md) for the
+QSV-only diagnostic build and its remaining hardware acceptance.
 Seeking, quality changes, and resuming a paused stream start a fresh window at
 the selected position. Abandoned streams stop after 45 seconds without requests;
 their temporary files are removed. Windows stops owned HLS encoders when the

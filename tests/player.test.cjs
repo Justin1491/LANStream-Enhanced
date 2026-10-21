@@ -8,10 +8,11 @@ const vm = require('node:vm');
 const template = fs.readFileSync(path.join(__dirname, '../templates/player.html'), 'utf8');
 const script = template.match(/<script>([\s\S]*?)<\/script>/)[1];
 
-function player(direct = true, nativeHls = false) {
+function player(direct = true, nativeHls = false, fetcher = async () => ({ok:true, json:async () => ({state:'ready'})})) {
   const elements = {};
   for (const id of ['playerShell', 'video', 'playerMessage', 'playerControls', 'togglePlay',
-    'back30', 'forward30', 'seek', 'currentLabel', 'volume', 'fullscreenTop']) {
+    'back30', 'forward30', 'seek', 'currentLabel', 'volume', 'fullscreenTop',
+    'playbackDiagnostics', 'playbackReport']) {
     const classes = new Set();
     elements[id] = Object.assign(new EventTarget(), {
       paused: true,
@@ -21,9 +22,10 @@ function player(direct = true, nativeHls = false) {
         toggle: (name, active) => active ? classes.add(name) : classes.delete(name),
       },
       setAttribute(name, value) { this[name] = value; },
+      removeAttribute(name) { delete this[name]; },
     });
   }
-  const qualityModes = ['normal', 'low', 'hevc'].map(value => Object.assign(new EventTarget(), {value, checked:false}));
+  const qualityModes = ['normal', 'low'].map(value => Object.assign(new EventTarget(), {value, checked:false}));
   const document = Object.assign(new EventTarget(), {
     getElementById: id => elements[id] || null,
     querySelectorAll: () => qualityModes,
@@ -31,7 +33,7 @@ function player(direct = true, nativeHls = false) {
   Object.assign(elements.video, {readyState:1, querySelectorAll:() => [], load() {},
     canPlayType: type => nativeHls && type === 'application/vnd.apple.mpegurl' ? 'maybe' : ''});
   const window = Object.assign(new EventTarget(), {setTimeout, clearTimeout});
-  const context = vm.createContext({document, window});
+  const context = vm.createContext({document, window, fetch:fetcher});
   vm.runInContext(script.replace('{{ "true" if native else "false" }}', String(direct))
     .replace('{{ duration }}', '60').replace(/{{.*?}}/g, '"/fixture"'), context);
   return {document, window, qualityModes, ...elements};
@@ -158,41 +160,44 @@ test('paused video does not report buffering and media failures retain their err
   assert.match(p.playerMessage.textContent, /Playback failed \(browser error 4\)/);
 });
 
-test('HEVC selection survives seeking and switches back to low bandwidth', () => {
+test('Normal and Low Bandwidth preserve position when switching and seeking', () => {
   const p = player(false);
   p.video.play = () => Promise.resolve();
   p.window.dispatchEvent(new Event('DOMContentLoaded'));
   p.video.currentTime = 12;
-  const hevc = p.qualityModes.find(radio => radio.value === 'hevc');
-  hevc.checked = true;
-  hevc.dispatchEvent(new Event('change'));
-  assert.match(p.video.src, /start=12&audio=&hevc=1$/);
-  p.video.currentTime = 3;
-  p.forward30.onclick();
-  assert.match(p.video.src, /start=45&audio=&hevc=1$/);
   const low = p.qualityModes.find(radio => radio.value === 'low');
   low.checked = true;
   low.dispatchEvent(new Event('change'));
-  assert.match(p.video.src, /&low=1$/);
-  assert.doesNotMatch(p.video.src, /hevc=1/);
+  assert.match(p.video.src, /start=12&audio=&low=1$/);
+  p.video.currentTime = 3;
+  p.forward30.onclick();
+  assert.match(p.video.src, /start=45&audio=&low=1$/);
+  const normal = p.qualityModes.find(radio => radio.value === 'normal');
+  normal.checked = true;
+  normal.dispatchEvent(new Event('change'));
+  assert.match(p.video.src, /start=48&audio=$/);
 });
 
-test('native HLS uses a fresh stream for seeking and quality changes', () => {
+test('native HLS uses a fresh stream for seeking and quality changes', async () => {
   const p = player(false, true);
   p.video.play = () => Promise.resolve();
   p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise(setImmediate);
   assert.match(p.video.src, /\?stream=.*-1&start=0&audio=$/);
   p.video.currentTime = 3;
   p.forward30.onclick();
+  await new Promise(setImmediate);
   assert.match(p.video.src, /\?stream=.*-2&start=33&audio=$/);
   const low = p.qualityModes.find(radio => radio.value === 'low');
   low.checked = true;
   low.dispatchEvent(new Event('change'));
+  await new Promise(setImmediate);
   assert.match(p.video.src, /\?stream=.*-3&start=36&audio=&low=1$/);
-  const hevc = p.qualityModes.find(radio => radio.value === 'hevc');
-  hevc.checked = true;
-  hevc.dispatchEvent(new Event('change'));
-  assert.match(p.video.src, /\?stream=.*-4&start=39&audio=&hevc=1$/);
+  const normal = p.qualityModes.find(radio => radio.value === 'normal');
+  normal.checked = true;
+  normal.dispatchEvent(new Event('change'));
+  await new Promise(setImmediate);
+  assert.match(p.video.src, /\?stream=.*-4&start=39&audio=$/);
 });
 
 test('native HLS support preserves direct playback for compatible files', () => {
@@ -202,27 +207,31 @@ test('native HLS support preserves direct playback for compatible files', () => 
   assert.equal(p.video.src, '/fixture');
 });
 
-test('native HLS resumes from the paused position with a fresh stream', () => {
+test('native HLS resumes from the paused position with a fresh stream', async () => {
   const p = player(false, true);
   p.video.play = () => Promise.resolve();
   p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise(setImmediate);
   p.video.currentTime = 7;
   p.video.dispatchEvent(new Event('pause'));
   p.togglePlay.onclick();
+  await new Promise(setImmediate);
   assert.match(p.video.src, /-2&start=7&audio=$/);
   p.video.currentTime = 2;
   p.video.dispatchEvent(new Event('pause'));
   p.video.dispatchEvent(new Event('play'));
+  await new Promise(setImmediate);
   assert.match(p.video.src, /-3&start=9&audio=$/);
 });
 
-test('switching from paused HLS to direct playback clears its resume position', () => {
+test('switching from paused HLS to direct playback clears its resume position', async () => {
   const p = player(true, true);
   p.video.play = () => Promise.resolve();
   p.window.dispatchEvent(new Event('DOMContentLoaded'));
   const low = p.qualityModes.find(radio => radio.value === 'low');
   low.checked = true;
   low.dispatchEvent(new Event('change'));
+  await new Promise(setImmediate);
   p.video.currentTime = 7;
   p.video.dispatchEvent(new Event('pause'));
   const normal = p.qualityModes.find(radio => radio.value === 'normal');
@@ -232,4 +241,79 @@ test('switching from paused HLS to direct playback clears its resume position', 
   p.video.dispatchEvent(new Event('play'));
   assert.equal(p.video.src, '/fixture');
   assert.equal(p.video.currentTime, 9);
+});
+
+test('HLS waits through server startup before asking Safari to load the playlist', async () => {
+  const requests = [];
+  const p = player(false, true, async url => {
+    requests.push(url);
+    return {ok:true, json:async () => requests.length === 1
+      ? {state:'starting', phase:'first_segment', progress:{frames:12}}
+      : {state:'ready'}};
+  });
+  let poll, plays = 0;
+  p.window.setTimeout = callback => { poll = callback; return 1; };
+  p.video.pause = () => {};
+  p.video.play = () => { plays++; return Promise.resolve(); };
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise(setImmediate);
+  assert.equal(p.video.src, undefined, 'Safari must not receive an unpublished playlist');
+  assert.equal(plays, 0);
+  assert.match(requests[0], /&prepare=1$/);
+  assert.match(p.playbackReport.textContent, /first_segment/);
+  poll();
+  await new Promise(setImmediate);
+  assert.equal(plays, 1);
+  assert.match(p.video.src, /-1&start=0&audio=$/);
+  assert.equal(requests.length, 2);
+});
+
+test('failed HLS startup shows the server failure without loading failed media', async () => {
+  const p = player(false, true, async () => ({ok:false, json:async () => ({
+    state:'failed', phase:'encoder_exit', backend:'qsv', exit_code:3,
+  })}));
+  p.video.pause = () => {};
+  p.video.play = () => assert.fail('A failed encoder cannot produce playable media');
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise(setImmediate);
+  assert.equal(p.video.src, undefined);
+  assert.match(p.playerMessage.textContent, /server.*encoder.*failed/i);
+  assert.match(p.playbackReport.textContent, /"exit_code": 3/);
+  assert.equal(p.playbackDiagnostics.hidden, false);
+});
+
+test('late readiness for a replaced generation cannot restart old playback', async () => {
+  let release;
+  const p = player(false, true, url => url.includes('-1&')
+    ? new Promise(resolve => { release = resolve; })
+    : Promise.resolve({ok:true, json:async () => ({state:'ready'})}));
+  p.video.pause = () => {};
+  p.video.play = () => Promise.resolve();
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  const low = p.qualityModes.find(radio => radio.value === 'low');
+  low.checked = true;
+  low.dispatchEvent(new Event('change'));
+  await new Promise(setImmediate);
+  assert.match(p.video.src, /-2&start=0&audio=&low=1$/);
+  assert.equal(typeof release, 'function');
+  release({ok:true, json:async () => ({state:'ready'})});
+  await new Promise(setImmediate);
+  assert.match(p.video.src, /-2&start=0&audio=&low=1$/);
+});
+
+test('an HLS autoplay denial is retried inside the Play gesture without another preparation', async () => {
+  let requests=0, plays=0;
+  const p=player(false,true,async()=>{requests++;return {ok:true,json:async()=>({state:'ready'})};});
+  p.video.pause=()=>{};
+  p.video.play=()=>{
+    if(++plays===1)return Promise.reject(Object.assign(new Error('Gesture required'),{name:'NotAllowedError'}));
+    return Promise.resolve();
+  };
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  await new Promise(setImmediate);
+  assert.equal(p.playerMessage.textContent,'Tap Play to start playback.');
+  p.togglePlay.onclick();
+  assert.equal(plays,2,'The click itself must call play, preserving the Safari user gesture');
+  await new Promise(setImmediate);
+  assert.equal(requests,1,'Do not replace the ready stream to retry autoplay');
 });

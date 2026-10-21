@@ -1,0 +1,62 @@
+name: Windows playback diagnostics
+
+on:
+  push:
+    branches: [codex/windows-hls-startup]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-playback-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Check Windows ownership, listener and HLS startup (no FFmpeg encoding)
+        run: >-
+          python -B -m unittest -v tests.test_hls_streams tests.test_launcher
+          tests.test_app.ExplorerRoutes.test_hls_preparation_waits_without_a_media_503_and_reuses_encoder
+          tests.test_app.ExplorerRoutes.test_hls_playlist_serves_completed_segments_with_ranges_and_scope_checks
+          tests.test_app.ExplorerRoutes.test_hls_rejects_nonfinite_start_and_reports_encoder_failure
+          tests.test_app.ExplorerRoutes.test_explicit_qsv_diagnostics_never_run_a_software_encoder_test
+          tests.test_app.ExplorerRoutes.test_hls_preparation_reports_spawn_errors_without_private_exception_text
+          tests.test_app.ExplorerRoutes.test_hevc_sources_offer_normal_and_low_and_reject_removed_copy_mode
+      - name: Check player and explorer
+        run: node --test tests/player.test.cjs tests/explorer.test.cjs
+      - name: Build application
+        run: python -m PyInstaller --clean --noconfirm LANStream.spec
+      - name: Package diagnostic instructions and identity
+        shell: pwsh
+        run: |
+          Copy-Item 'scripts/Run QSV Diagnostics.cmd' 'dist/LANStream/'
+          Copy-Item 'docs/windows-playback-diagnostics.md' 'dist/LANStream/README-DIAGNOSTICS.md'
+          Copy-Item 'LICENSE' 'dist/LANStream/'
+          Copy-Item 'THIRD_PARTY_LICENSES.md' 'dist/LANStream/'
+          $identity = [ordered]@{
+            source_commit = '${{ github.sha }}'
+            executable_sha256 = (Get-FileHash 'dist/LANStream/LANStream.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+            native_windows_fixture_checks = 'passed'
+            real_qsv_playback_verified = $false
+          }
+          $identity | ConvertTo-Json | Set-Content -Encoding utf8 'dist/LANStream/BUILD-IDENTITY.json'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: LANStream-Windows-QSV-Diagnostics
+          path: dist/LANStream/
+          retention-days: 14
+          if-no-files-found: error

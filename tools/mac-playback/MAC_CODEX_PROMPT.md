@@ -27,7 +27,8 @@ on Apple hardware, and the incorrect codec header is an unproven root cause.
 3. Run the real app using run_lanstream.py with isolated software encoding and
    only the sample folder. Use a local venv and requirements.txt if needed,
    respecting the Mac's dependency-install permissions. Test Normal, Low
-   Bandwidth, and optional H.265. Capture currentSrc, selected encoder, and the
+   Bandwidth. HEVC inputs use normal transcoding; the experimental H.265 copy
+   mode has been removed. Capture currentSrc, selected encoder, and the
    relevant response status, Content-Type, Range/Content-Range, and body type.
    For HLS inspect playlist, init.mp4 and .m4s requests, timestamps, authentication,
    and errors. Confirm an error response isn't an HTML login/error page.

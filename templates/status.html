@@ -9,6 +9,7 @@
   <div><span>Preference</span><strong id="preference">auto</strong></div>
   <div><span>NVENC profile</span><strong id="nvencProfile">—</strong></div>
 </div>
+<p class="muted">Build <code id="buildIdentity">—</code> · Instance <code id="serverInstance">—</code></p>
 
 <div class="status-actions">
   <button id="retestButton" type="button">Retest transcoder backends</button>
@@ -85,6 +86,8 @@ async function refreshStatus(force = false) {
   document.getElementById("streamCount").textContent = data.active_stream_count;
   document.getElementById("preference").textContent = data.preference || "auto";
   document.getElementById("nvencProfile").textContent = data.nvenc_profile || "—";
+  document.getElementById("buildIdentity").textContent = data.server?.build?.slice(0,12) || "unknown";
+  document.getElementById("serverInstance").textContent = data.server?.instance || "unknown";
 
   const tbody = document.querySelector("#streamsTable tbody");
   const table = document.getElementById("streamsTable");

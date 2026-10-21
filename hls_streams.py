@@ -1,6 +1,7 @@
 """Owned, short-lived FFmpeg HLS encoders and their published files."""
 
 import os
+import math
 import re
 import shutil
 import subprocess
@@ -96,12 +97,14 @@ def _stop_process(process):
 
 
 class HLSStream:
-    def __init__(self, directory, identity, source, process, stderr, tracker, tracker_id):
+    def __init__(self, directory, identity, source, process, stderr, tracker, tracker_id, backend=None):
         self.directory = directory
         self.identity = identity
         self.source = source
         self.process = process
         self.tracker_id = tracker_id
+        self.backend = backend
+        self.started = time.monotonic()
         self.touched = time.monotonic()
         self.retired_at = None
         self._stderr = stderr
@@ -126,9 +129,11 @@ class HLSStream:
         path = self.directory / name
         deadline = time.monotonic() + max(0, timeout)
         while True:
+            # Check exit first so files published just before exit remain visible.
+            exited = self.process.poll() is not None
             if path.is_file() and not path.is_symlink():
                 return path
-            if self.process.poll() is not None:
+            if exited:
                 raise FileNotFoundError(name)
             if time.monotonic() >= deadline:
                 raise TimeoutError("HLS encoder has not published " + name)
@@ -142,6 +147,68 @@ class HLSStream:
                 return log.read().decode("utf-8", errors="replace")[-2000:]
         except OSError:
             return ""
+
+    def diagnostics(self):
+        """A bounded snapshot of this encoder, never its command or private paths."""
+        # As in wait_for(), sample exit before the files: a cleanly exited
+        # encoder must have had its final publications included in the scan.
+        code = self.process.poll()
+        progress = {}
+        try:
+            with (self.directory / 'progress.log').open('rb') as log:
+                log.seek(0, 2)
+                log.seek(max(0, log.tell() - 8192))
+                text = log.read().decode('ascii', errors='replace')
+            pending = {}
+            for line in text.splitlines():
+                key, _, value = line.partition('=')
+                if key == 'progress' and value in {'continue', 'end'}:
+                    progress = pending
+                    pending = {}
+                else:
+                    pending[key] = value
+        except OSError:
+            pass
+
+        metrics = {}
+        for key, output, divisor in [('frame', 'frames', 1), ('out_time_us', 'output_seconds', 1_000_000),
+                                      ('speed', 'speed', 1)]:
+            try:
+                value = float(progress[key].removesuffix('x')) / divisor
+                if math.isfinite(value):
+                    metrics[output] = int(value) if key == 'frame' else round(value, 3)
+            except (KeyError, ValueError):
+                pass
+        files = {}
+        try:
+            for path in self.directory.iterdir():
+                if _PUBLISHED_NAME.fullmatch(path.name) and not path.is_symlink():
+                    try:
+                        files[path.name] = path.stat().st_size
+                    except OSError:
+                        pass  # A rolling segment can disappear during the snapshot.
+        except OSError:
+            pass
+        published = dict(playlist_bytes=files.get('index.m3u8', 0),
+                         init_bytes=files.get('init.mp4', 0),
+                         segments=sum(name.endswith('.m4s') for name in files))
+        ready = all(published.values())
+        state = 'failed' if code not in (None, 0) or (code == 0 and not ready) else 'ready' if ready else 'starting'
+        phase = ('encoder_exit' if state == 'failed' else 'ready' if ready
+                 else 'playlist_publication' if published['segments'] else 'first_segment'
+                 if metrics.get('frames', 0) > 0 else 'first_frame')
+        detail = self.error_detail()
+        # Replace the known input/output before considering any error text for
+        # the browser. Drop lines containing other paths; never expose a command.
+        for path, replacement in [(str(self.source), '[input]'), (str(self.directory), '[output]')]:
+            detail = detail.replace(path, replacement).replace(path.replace('\\', '/'), replacement)
+        detail = detail.replace(self.source.name, '[input]')
+        detail = re.sub(r'\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+', '[url]', detail)
+        detail = '\n'.join(line for line in detail.splitlines()
+                           if not re.search(r'[A-Za-z]:[\\/]|\\\\|(?<!\w)/[^\s]', line.replace('[output]/', '[output] ')))
+        return dict(state=state, phase=phase, backend=self.backend, running=code is None,
+                    exit_code=code, elapsed_seconds=round(time.monotonic() - self.started, 1),
+                    progress=metrics, files=published, error=detail[-2000:])
 
 
 class HLSStreams:
@@ -251,7 +318,7 @@ class HLSStreams:
                     stderr.close()
                 shutil.rmtree(directory, ignore_errors=True)
                 raise
-            stream = HLSStream(directory, identity, source, process, stderr, self.tracker, tracker_id)
+            stream = HLSStream(directory, identity, source, process, stderr, self.tracker, tracker_id, backend)
             self._streams[stream_id] = stream
             if self._reaper is None:
                 self._reaper = threading.Thread(target=self._run_reaper, name="hls-reaper", daemon=True)

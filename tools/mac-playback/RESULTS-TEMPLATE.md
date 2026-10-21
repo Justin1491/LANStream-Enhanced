@@ -17,7 +17,6 @@ Network route (Mac loopback / LAN / VPN):
 | HEVC fragmented / chunked | | | | |
 | App Normal | | | | |
 | App Low Bandwidth | | | | |
-| App H.265 | | | | |
 
 For each failure: currentSrc (redact personal paths), status/Content-Type,
 Range/Content-Range/Transfer-Encoding, error code/message, response body type,

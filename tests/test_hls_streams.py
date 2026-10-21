@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from hls_streams import HLSStreams
+from hls_streams import HLSStream, HLSStreams
 
 
 class HLSStreamsTests(unittest.TestCase):
@@ -81,6 +81,78 @@ class HLSStreamsTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             stream.wait_for("index.m3u8", timeout=0.01)
         self.assertIsNone(stream.process.poll())
+
+    def test_diagnostics_distinguish_live_startup_from_encoder_exit(self):
+        stream = self.create()
+        (stream.directory / 'progress.log').write_text(
+            'frame=12\nout_time_us=400000\nspeed=0.25x\nprogress=continue\nframe=99\n')
+        report = stream.diagnostics()
+        self.assertEqual(report['state'], 'starting')
+        self.assertEqual(report['phase'], 'first_segment')
+        self.assertEqual(report['progress']['frames'], 12, 'Ignore an unfinished progress update')
+        self.assertEqual(report['progress']['output_seconds'], 0.4)
+        self.assertTrue(report['running'])
+        self.assertIsNone(report['exit_code'])
+        stream.process.terminate()
+        stream.process.wait(timeout=5)
+        report = stream.diagnostics()
+        self.assertEqual(report['state'], 'failed')
+        self.assertEqual(report['phase'], 'encoder_exit')
+        self.assertFalse(report['running'])
+        self.assertIsNotNone(report['exit_code'])
+
+    def test_diagnostics_report_publication_and_redact_private_paths(self):
+        source = self.root / 'Private name.mkv'
+        stream = self.create(source=source)
+        for name, data in [('init.mp4', b'init'), ('segment000007.m4s', b'segment'),
+                           ('index.m3u8', b'#EXTM3U\nsegment000007.m4s\n')]:
+            (stream.directory / name).write_bytes(data)
+        stream._stderr.write((f'Cannot open "{source}" or "{stream.directory / "init.mp4"}"\n'
+                              'https://user:password@example.invalid/media\n').encode())
+        stream._stderr.flush()
+        report = stream.diagnostics()
+        self.assertEqual(report['state'], 'ready')
+        self.assertEqual(report['files']['segments'], 1)
+        self.assertEqual(report['files']['init_bytes'], 4)
+        self.assertNotIn(str(self.root), str(report))
+        self.assertNotIn('Private name', str(report))
+        self.assertNotIn('password', str(report))
+
+    def test_readiness_sees_files_published_as_the_encoder_exits(self):
+        directory = self.root / 'final-publication'
+        directory.mkdir()
+        process = Mock()
+
+        def finish():
+            for name in ('init.mp4', 'segment000000.m4s', 'index.m3u8'):
+                (directory / name).write_bytes(b'published')
+            return 0
+
+        process.poll.side_effect = finish
+        stream = HLSStream(directory, (), self.source, process, Mock(), self.tracker, 'tracked', 'qsv')
+        report = stream.diagnostics()
+        self.assertEqual(report['state'], 'ready')
+        self.assertEqual(report['exit_code'], 0)
+        self.assertEqual(report['files']['segments'], 1)
+
+    def test_final_file_published_during_exit_check_is_available(self):
+        for name in ("index.m3u8", "segment000000.m4s"):
+            with self.subTest(name=name):
+                directory = self.root / name
+                directory.mkdir()
+                published = directory / name
+                process = Mock()
+
+                def finish():
+                    published.write_bytes(b"completed output")
+                    return 0
+
+                # Publish the final file as the process reports successful exit.
+                process.poll.side_effect = finish
+                stream = HLSStream(directory, (), self.source, process,
+                                   Mock(), self.tracker, "tracked")
+                self.assertEqual(stream.wait_for(name, timeout=0).read_bytes(),
+                                 b"completed output")
 
     def test_replacement_stops_only_same_page_and_source(self):
         first = self.create()
