@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const template = fs.readFileSync(path.join(__dirname, '../templates/player.html'), 'utf8');
 const script = template.match(/<script>([\s\S]*?)<\/script>/)[1];
 
-function player(direct = true) {
+function player(direct = true, nativeHls = false) {
   const elements = {};
   for (const id of ['playerShell', 'video', 'playerMessage', 'playerControls', 'togglePlay',
     'back30', 'forward30', 'seek', 'currentLabel', 'volume', 'fullscreenTop']) {
@@ -28,7 +28,8 @@ function player(direct = true) {
     getElementById: id => elements[id] || null,
     querySelectorAll: () => qualityModes,
   });
-  Object.assign(elements.video, {readyState:1, querySelectorAll:() => [], load() {}});
+  Object.assign(elements.video, {readyState:1, querySelectorAll:() => [], load() {},
+    canPlayType: type => nativeHls && type === 'application/vnd.apple.mpegurl' ? 'maybe' : ''});
   const window = Object.assign(new EventTarget(), {setTimeout, clearTimeout});
   const context = vm.createContext({document, window});
   vm.runInContext(script.replace('{{ "true" if native else "false" }}', String(direct))
@@ -174,4 +175,61 @@ test('HEVC selection survives seeking and switches back to low bandwidth', () =>
   low.dispatchEvent(new Event('change'));
   assert.match(p.video.src, /&low=1$/);
   assert.doesNotMatch(p.video.src, /hevc=1/);
+});
+
+test('native HLS uses a fresh stream for seeking and quality changes', () => {
+  const p = player(false, true);
+  p.video.play = () => Promise.resolve();
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  assert.match(p.video.src, /\?stream=.*-1&start=0&audio=$/);
+  p.video.currentTime = 3;
+  p.forward30.onclick();
+  assert.match(p.video.src, /\?stream=.*-2&start=33&audio=$/);
+  const low = p.qualityModes.find(radio => radio.value === 'low');
+  low.checked = true;
+  low.dispatchEvent(new Event('change'));
+  assert.match(p.video.src, /\?stream=.*-3&start=36&audio=&low=1$/);
+  const hevc = p.qualityModes.find(radio => radio.value === 'hevc');
+  hevc.checked = true;
+  hevc.dispatchEvent(new Event('change'));
+  assert.match(p.video.src, /\?stream=.*-4&start=39&audio=&hevc=1$/);
+});
+
+test('native HLS support preserves direct playback for compatible files', () => {
+  const p = player(true, true);
+  p.video.play = () => Promise.resolve();
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  assert.equal(p.video.src, '/fixture');
+});
+
+test('native HLS resumes from the paused position with a fresh stream', () => {
+  const p = player(false, true);
+  p.video.play = () => Promise.resolve();
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  p.video.currentTime = 7;
+  p.video.dispatchEvent(new Event('pause'));
+  p.togglePlay.onclick();
+  assert.match(p.video.src, /-2&start=7&audio=$/);
+  p.video.currentTime = 2;
+  p.video.dispatchEvent(new Event('pause'));
+  p.video.dispatchEvent(new Event('play'));
+  assert.match(p.video.src, /-3&start=9&audio=$/);
+});
+
+test('switching from paused HLS to direct playback clears its resume position', () => {
+  const p = player(true, true);
+  p.video.play = () => Promise.resolve();
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  const low = p.qualityModes.find(radio => radio.value === 'low');
+  low.checked = true;
+  low.dispatchEvent(new Event('change'));
+  p.video.currentTime = 7;
+  p.video.dispatchEvent(new Event('pause'));
+  const normal = p.qualityModes.find(radio => radio.value === 'normal');
+  normal.checked = true;
+  normal.dispatchEvent(new Event('change'));
+  p.video.currentTime = 9;
+  p.video.dispatchEvent(new Event('play'));
+  assert.equal(p.video.src, '/fixture');
+  assert.equal(p.video.currentTime, 9);
 });

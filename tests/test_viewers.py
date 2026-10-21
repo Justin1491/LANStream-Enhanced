@@ -1,5 +1,6 @@
 """Non-video viewer regressions using only isolated fictional media."""
 import io
+import gc
 import os
 from pathlib import Path
 import subprocess
@@ -53,6 +54,8 @@ class ViewerRoutes(unittest.TestCase):
         if cls.imported_app:
             cls.original_scheduler.close()
             cls.original_index.close()
+        # Failed PDF opens can retain native file handles in exception cycles.
+        gc.collect()
         cls.temp.cleanup()
 
     def setUp(self):

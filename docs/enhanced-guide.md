@@ -53,9 +53,34 @@ is needed, and the source file is never changed. This mode requires an HEVC
 capable browser/device; use **Normal** if playback fails. It preserves the
 original video bitrate, resolution and HDR characteristics; it does not tone map
 HDR for SDR displays. Seeking lands near keyframes, keeping audio and video
-together; use Normal for precise seeking. **Low Bandwidth** continues to encode H.264 at the
-configured size and bitrate. H.265 still uses the existing streamed MP4 delivery;
-iPhone acceptance and the reported Safari error require a real-device check.
+together; use Normal for precise seeking.
+
+Browsers with native HLS support, including Safari, receive generated playback
+as a playlist and short MP4 segments. This applies to MKV playback and to
+**Low Bandwidth** or **H.265** for any supported source. Compatible MOV/MP4 files
+still play directly in Normal mode. Other browsers retain streamed MP4 delivery
+through URLs ending in `/video.mp4`. The original filename and media stay unchanged.
+
+**Low Bandwidth** encodes H.264 at the configured size and bitrate, using Intel
+Quick Sync when selected. HLS delivery does not change the encoder. Select Low
+Bandwidth manually for a slower connection; this release does not automatically
+switch quality. Cellular access still requires a private VPN to the server.
+H.265 keeps the source bitrate and uses no video encoder.
+
+HLS encoders run near playback speed with a short temporary segment window.
+Seeking, quality changes, and resuming a paused stream start a fresh window at
+the selected position. Abandoned streams stop after 45 seconds without requests;
+their temporary files are removed. Windows stops owned HLS encoders when the
+application exits, including during an upgrade. Physical Safari and Intel QSV
+acceptance must be checked on the target device after installing the package.
+An abrupt process termination can leave temporary HLS folders in the cache;
+automatic cleanup covers streams managed by the running application, not
+orphaned folders from a previous process. Stop the application before manually
+removing those folders.
+
+For Mac Safari and physical iPhone diagnosis, use the isolated comparison player
+and ready-to-paste Codex prompt in [tools/mac-playback](../tools/mac-playback/README.md).
+The private sample media is supplied separately and must never be committed.
 
 ## Browse, search and favorites
 

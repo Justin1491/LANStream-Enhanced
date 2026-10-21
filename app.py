@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import atexit
 import hashlib
 import mimetypes
 import os
@@ -13,6 +14,7 @@ import subprocess
 import threading
 import time
 import io
+import math
 import zipfile
 from functools import lru_cache
 from pathlib import Path
@@ -25,6 +27,7 @@ from flask import (
 from PIL import Image, ImageOps
 import pymupdf
 from werkzeug.exceptions import HTTPException
+from hls_streams import HLSStreams
 from directory_index import DirectoryIndex, FILE_TYPE_KINDS, root_id, _relative
 from image_scheduler import ImageScheduler
 
@@ -221,6 +224,8 @@ class StreamTracker:
 
 
 stream_tracker = StreamTracker()
+hls_streams = HLSStreams(CACHE_DIR / 'hls', stream_tracker)
+atexit.register(hls_streams.close)
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 
@@ -1494,6 +1499,7 @@ def player(root_index, relpath):
         audios=audios, subtitles=subtitles,
         native=direct_playback_ok(source, info, audios),
         hevc=bool(videos and videos[0]["codec"] == "hevc"),
+        hls_token=secrets.token_hex(16),
     )
 
 
@@ -1759,8 +1765,11 @@ def transcode_command(
     audio_index: int | None,
     start: float,
     low: bool = False,
+    hls_dir: Path | None = None,
 ) -> list[str]:
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "error"]
+    if hls_dir is not None:
+        cmd += ["-nostdin", "-readrate", "1"]
 
     if backend == "hevc-copy":
         # shortcut: copy seeks land on nearby keyframes; use Normal for precise seeking.
@@ -1859,6 +1868,17 @@ def transcode_command(
     if audio_index is not None:
         cmd += ['-c:a', 'aac', '-b:a', '128k' if low else '160k', '-ac', '2']
 
+    if hls_dir is not None:
+        if backend != 'hevc-copy':
+            cmd += ['-force_key_frames', 'expr:gte(t,n_forced*2)']
+        return cmd + [
+            '-f', 'hls', '-hls_time', '2', '-hls_list_size', '6',
+            '-hls_delete_threshold', '3', '-hls_flags', 'delete_segments+temp_file',
+            '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
+            '-hls_segment_filename', str(hls_dir / 'segment%06d.m4s'),
+            str(hls_dir / 'index.m3u8'),
+        ]
+
     cmd += [
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof+omit_tfhd_offset",
         "-frag_duration", "500000",
@@ -1868,8 +1888,9 @@ def transcode_command(
     return cmd
 
 
+@app.route("/hls/<int:root_index>/<path:relpath>/index.m3u8", endpoint="hls_media", defaults={"hls": True})
 @app.route("/transcode/<int:root_index>/<path:relpath>")
-def transcode(root_index, relpath):
+def transcode(root_index, relpath, hls=False):
     root = get_root(root_index)
     source = safe_path(root, relpath)
     if not is_video(source):
@@ -1902,6 +1923,43 @@ def transcode(root_index, relpath):
             audio_index = int(request.args["audio"])
         except ValueError:
             abort(400)
+
+    if hls:
+        if not math.isfinite(start):
+            abort(400)
+        stream_id = request.args.get('stream', '')
+        low = request.args.get('low') == '1'
+        stream = None
+        try:
+            stream = hls_streams.get(
+                stream_id, (str(source), transcoder['key'], start, audio_index, low),
+                lambda directory: transcode_command(transcoder['key'], source, audio_index, start, low, directory),
+                source=source, backend=transcoder['key'], start=start,
+            )
+            playlist = stream.wait_for('index.m3u8').read_text(encoding='utf-8')
+            if stream.process.poll() not in (None, 0):
+                raise RuntimeError('HLS encoder exited with an error')
+        except ValueError as exc:
+            abort(400, description=str(exc))
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            app.logger.error('HLS startup failed: %s', stream.error_detail() if stream else str(exc))
+            return Response('Unable to start HLS playback. Check the server log.', status=503, mimetype='text/plain')
+
+        def segment_url(name):
+            if not re.fullmatch(r'init\.mp4|segment[0-9]{6}\.m4s', name):
+                abort(503)
+            return url_for('hls_segment', root_index=root_index, relpath=relpath,
+                           stream_id=stream_id, filename=name)
+
+        lines = []
+        for line in playlist.splitlines():
+            if line.startswith('#EXT-X-MAP:'):
+                line = re.sub(r'URI="([^"]+)"', lambda match: 'URI="' + segment_url(match[1]) + '"', line)
+            elif line and not line.startswith('#'):
+                line = segment_url(line)
+            lines.append(line)
+        return Response('\n'.join(lines) + '\n', mimetype='application/vnd.apple.mpegurl',
+                        headers={'Cache-Control': 'private, no-store'})
 
     cmd = transcode_command(transcoder["key"], source, audio_index, start, low=request.args.get("low") == "1")
     app.logger.info("Starting %s transcode: %s", transcoder["label"], " ".join(cmd))
@@ -1965,6 +2023,43 @@ def transcode(root_index, relpath):
     response.headers["Content-Type"] = "video/mp4"
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@app.route("/stream/<int:root_index>/<path:relpath>/video.mp4")
+def transcoded_media(root_index, relpath):
+    # The URL names the output container, not the original file's format.
+    return transcode(root_index, relpath)
+
+
+@app.route('/hls-segment/<int:root_index>/<stream_id>/<path:relpath>/<filename>')
+def hls_segment(root_index, stream_id, relpath, filename):
+    source = safe_path(get_root(root_index), relpath)
+    if not is_video(source) or not re.fullmatch(r'init\.mp4|segment[0-9]{6}\.m4s', filename):
+        abort(404)
+    try:
+        stream = hls_streams.lookup(stream_id, source)
+        path = stream.wait_for(filename)
+    except ValueError:
+        abort(400)
+    except (KeyError, FileNotFoundError):
+        abort(404)
+    except TimeoutError:
+        abort(503)
+    response = send_file(path, mimetype='video/mp4', conditional=True)
+    response.headers['Cache-Control'] = 'private, no-store'
+    body = response.response
+
+    def counted():
+        try:
+            for chunk in body:
+                stream_tracker.add_bytes(stream.tracker_id, len(chunk))
+                yield chunk
+        finally:
+            if hasattr(body, 'close'):
+                body.close()
+
+    response.response = counted()
     return response
 
 

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LANStream private playback probes</title>
+<style>
+body {font:16px system-ui,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;background:#fafafa;color:#17202a}
+section {border:1px solid #aab4be;border-radius:8px;padding:14px;margin:18px 0;background:white}
+video {display:block;width:100%;max-height:360px;background:#111;margin:10px 0}
+pre {white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px} button {font:inherit;padding:10px} label {display:block;margin-top:10px}
+</style>
+<h1>Private playback probes</h1>
+<p>Tap Play on one case at a time. Watch for a visible, moving picture and listen for audio. Time advancing alone does not prove video works. Each new playback pauses the other players. Nothing is uploaded.</p>
+<p>The reference H.264 case checks basic playback. The other cases separate container, codec, range delivery, chunked delivery, and the legacy codec header. Missing samples report a load error.</p>
+<button id="download" type="button">Download results JSON</button>
+<pre id="environment"></pre>
+<main id="cases"></main>
+<script>
+'use strict';
+const cases = [
+  ['h264-reference-range', 'H.264 reference / byte ranges', '/media/h264-reference.mp4'],
+  ['hevc-apple-range', 'HEVC Apple MP4 / byte ranges', '/media/hevc-apple-mp4.mp4'],
+  ['h264-fragmented-range', 'H.264 LANStream fragmented MP4 / byte ranges', '/media/h264-lanstream.mp4'],
+  ['h264-fragmented-chunked', 'H.264 LANStream fragmented MP4 / chunked', '/stream/h264-lanstream.mp4'],
+  ['h264-fragmented-legacy', 'H.264 LANStream fragmented MP4 / chunked + legacy header', '/legacy/h264-lanstream.mp4'],
+  ['hevc-fragmented-chunked', 'HEVC LANStream fragmented MP4 / chunked', '/stream/hevc-lanstream.mp4'],
+  ['original-mkv', 'Optional: original HEVC MKV / byte ranges', '/media/sample-hevc.mkv']
+];
+const probe = document.createElement('video');
+const types = ['video/mp4', 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"', 'video/mp4; codecs="hvc1"', 'video/mp4; codecs="hev1"', 'video/x-matroska'];
+const results = {
+  startedAt: new Date().toISOString(), userAgent: navigator.userAgent,
+  page: location.href, canPlayType: Object.fromEntries(types.map(type => [type, probe.canPlayType(type)])),
+  cases: []
+};
+document.getElementById('environment').textContent = JSON.stringify({userAgent: results.userAgent, canPlayType: results.canPlayType}, null, 2);
+const players = [];
+for (const [id, title, src] of cases) {
+  const section = document.createElement('section');
+  const heading = document.createElement('h2'); heading.textContent = title;
+  const video = document.createElement('video');
+  video.controls = true; video.playsInline = true; video.preload = 'none'; video.src = src;
+  video.setAttribute('aria-label', title);
+  const label = document.createElement('label'); label.textContent = 'Observed picture and sound: ';
+  const observed = document.createElement('select');
+  for (const text of ['Not tested', 'Moving video and audio', 'Moving video without audio', 'Audio only / no moving video', 'No playback', 'Other / uncertain']) {
+    const option = document.createElement('option'); option.textContent = text; observed.append(option);
+  }
+  label.append(observed);
+  const status = document.createElement('pre'); status.setAttribute('aria-live', 'polite');
+  const record = {id, title, src, observation: 'Not tested', latest: {}, events: [], droppedEvents: 0};
+  results.cases.push(record); players.push(video);
+  function snapshot(event) {
+    const frameCount = typeof video.getVideoPlaybackQuality === 'function' ? video.getVideoPlaybackQuality().totalVideoFrames : null;
+    const state = {event, at: new Date().toISOString(), currentTime: video.currentTime,
+      readyState: video.readyState, networkState: video.networkState, paused: video.paused,
+      videoWidth: video.videoWidth, videoHeight: video.videoHeight, totalVideoFrames: frameCount,
+      mediaError: video.error ? {code: video.error.code, message: video.error.message || ''} : null};
+    record.latest = state;
+    if (record.events.length < 400) record.events.push(state); else record.droppedEvents++;
+    status.textContent = JSON.stringify(state, null, 2) + '\nConfirm moving video visually; dimensions or time alone are not a pass.';
+  }
+  for (const event of ['loadstart','loadedmetadata','loadeddata','canplay','play','playing','pause','waiting','stalled','suspend','progress','timeupdate','seeking','seeked','ended','abort','emptied','error']) {
+    video.addEventListener(event, () => {if (event === 'play') players.forEach(other => {if (other !== video) other.pause();}); snapshot(event);});
+  }
+  observed.addEventListener('change', () => {record.observation = observed.value; snapshot('observation');});
+  section.append(heading, video, label, status); document.getElementById('cases').append(section);
+  snapshot('initial');
+}
+document.getElementById('download').addEventListener('click', () => {
+  results.exportedAt = new Date().toISOString();
+  const url = URL.createObjectURL(new Blob([JSON.stringify(results, null, 2)], {type:'application/json'}));
+  const link = document.createElement('a'); link.href = url; link.download = 'lanstream-playback-results.json';
+  document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+</script>
+</html>
