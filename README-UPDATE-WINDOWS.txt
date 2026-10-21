@@ -1,6 +1,14 @@
 LANStream Enhanced - update an existing Windows x64 installation
 ================================================================
 
+Recommended: download LANStream-Enhanced-Upgrade.zip, unblock it in Properties
+if shown, extract the entire ZIP outside the installation and double-click
+Upgrade Enhanced.cmd. It preserves settings, Favorites and media tools, makes
+a dated backup, starts the new app and restores the old app if startup fails.
+Read README-FIRST.txt in that bundle. No manual replacement is needed.
+
+The instructions below apply only to the optional manual Update.zip package.
+
 This package contains the updated application and its complete Python runtime.
 It uses your existing FFmpeg/FFprobe and 7-Zip tools. It is not a first-install
 bundle and does not contain config.txt, cache, passwords or media.

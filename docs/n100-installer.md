@@ -11,6 +11,14 @@ application ZIP compressed.
 ## Updating an existing Enhanced installation
 
 For routine releases, extract the new setup ZIP and run **Upgrade Enhanced.cmd**.
+The public **LANStream-Enhanced-Upgrade.zip** is an upgrade-only alternative:
+unblock it in ZIP Properties if shown, extract the entire ZIP outside the
+installation, then double-click **Upgrade Enhanced.cmd**. It needs no config
+template or private media mappings. Its inner application-update ZIP contains
+only the app and runtime; the upgrader copies your existing FFmpeg/FFprobe,
+optional NVENC executable, and 7-Zip tools from the retained backup unchanged.
+The same saved-data, protected-port and rollback checks described below apply.
+
 It updates `C:\LANStream-Enhanced`, verifies the package before changing anything,
 and stops only the app running from that installation. It keeps your existing
 `config.txt` byte-for-byte and copies the complete `cache` directory, including

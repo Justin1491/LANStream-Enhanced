@@ -127,6 +127,28 @@ class InstallerSafety(unittest.TestCase):
             expected = 'unsafe' if symbolic else 'duplicate'
             self.assert_rejected("Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead(" + literal(archive) + "); try { Assert-LanStreamZipEntries -Archive $z } finally { $z.Dispose() }", expected)
 
+    def test_application_update_accepts_app_runtime_without_bundled_tools(self):
+        archive = self.work / 'app-update.zip'
+        with zipfile.ZipFile(archive, 'w') as package:
+            package.writestr('LANStream-Enhanced/LANStream.exe', b'Updated fictional app')
+            package.writestr('LANStream-Enhanced/_internal/runtime', b'Updated fictional runtime')
+        result = self.run_ps("Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead(" + literal(archive)
+                             + "); try { Assert-LanStreamZipEntries $z -ApplicationUpdate } finally { $z.Dispose() }")
+        self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode(errors='replace'))
+        self.assert_rejected("Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead(" + literal(archive)
+                             + "); try { Assert-LanStreamZipEntries $z } finally { $z.Dispose() }", 'component')
+
+    def test_application_update_cannot_supply_config_cache_or_media_tools(self):
+        for entry in ('config.txt', 'cache/index.sqlite3', 'ffmpeg.exe', 'ffmpeg-nvenc.exe', 'ffprobe.exe', '7z.exe', '7z.dll', '7zz.exe'):
+            with self.subTest(entry=entry):
+                archive = self.work / 'unsafe-update.zip'
+                with zipfile.ZipFile(archive, 'w') as package:
+                    package.writestr('LANStream-Enhanced/LANStream.exe', b'Updated fictional app')
+                    package.writestr('LANStream-Enhanced/_internal/runtime', b'Updated fictional runtime')
+                    package.writestr('LANStream-Enhanced/' + entry, b'Must never replace installed data or tools')
+                self.assert_rejected("Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[IO.Compression.ZipFile]::OpenRead(" + literal(archive)
+                                     + "); try { Assert-LanStreamZipEntries $z -ApplicationUpdate } finally { $z.Dispose() }", 'must not replace')
+
     def test_percentile_uses_nearest_rank(self):
         result = self.run_ps('Get-LanStreamPercentile95 -Values @(1..20)')
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))

@@ -23,7 +23,7 @@ try {
     try { $hash=[BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-','') } finally { $hasher.Dispose(); $stream.Dispose() };
     if ($hash -ine $manifest.installer.sha256) { throw 'Installer checksum mismatch. Nothing was installed.' };
     Unblock-File -LiteralPath $installer;
-    if ($env:LANSTREAM_SETUP_UPGRADE -eq '1') { & $installer -ManifestPath $manifestPath -Upgrade }
+    if ($env:LANSTREAM_SETUP_UPGRADE -eq '1') { & $installer -ZipPath (Join-Path $folder $manifest.archive) -ManifestPath $manifestPath -Upgrade }
     else { & $installer -ManifestPath $manifestPath -ConfigTemplatePath (Join-Path $folder 'config.txt') };
     exit $LASTEXITCODE
 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
@@ -110,17 +110,47 @@ def config_text(roots):
     return '\r\n'.join(lines)
 
 
-def build_bundle(artifact_directory, roots, installer_path=BASE / 'scripts' / INSTALLER):
+UPGRADE_README = """LANStream Enhanced upgrade
+
+1. In the downloaded ZIP's Properties, select Unblock if shown.
+2. Extract the entire ZIP to a fresh local folder outside C:\\LANStream-Enhanced.
+3. Open the extracted LANStream-Enhanced-Upgrade folder and double-click
+   Upgrade Enhanced.cmd. Keep all five files together; leave the inner ZIP closed.
+
+This updates the existing C:\\LANStream-Enhanced application on port 8061.
+It verifies the package, stops only that installation's app, and preserves your
+config.txt, passwords, media roots, exclusions, complete cache and Favorites.
+Your installed FFmpeg/FFprobe and 7-Zip tools are retained byte-for-byte.
+It creates a dated sibling backup, starts the new app and checks startup.
+If startup fails it restores the previous installation and restarts it if it
+was running. Keep the printed backup and private log paths for recovery.
+Allow space for the new runtime and another copy of your cache. No backup is
+deleted automatically. Backups contain private settings and Favorites.
+
+No manual file replacement, new password or media mapping is needed.
+No first-install encoder benchmark is run. The app starts with your existing
+transcoder preference. This package requires an existing Enhanced installation.
+It does not change C:\\LANStream on port 8060, other instances on port 8062,
+firewall rules, services, scheduled tasks or global security settings.
+After PASS, open Enhanced on port 8061, sign in and check playback/Favorites.
+An unrelated process occupying 8061 must be closed separately before retrying.
+"""
+
+
+def build_bundle(artifact_directory, roots, installer_path=BASE / 'scripts' / INSTALLER, *, upgrade_only=False):
     artifact_directory = Path(artifact_directory).resolve()
     manifest_path = artifact_directory / 'release-manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8-sig'))
     archive_name = manifest['archive']
-    if archive_name != 'LANStream-Enhanced-Windows-x64-test.zip':
+    expected_archive = 'LANStream-Enhanced-Windows-x64-Update.zip' if upgrade_only else 'LANStream-Enhanced-Windows-x64-test.zip'
+    if archive_name != expected_archive:
         raise ValueError('Unexpected application archive name')
+    if upgrade_only and manifest.get('package_kind') != 'application-update':
+        raise ValueError('Upgrade-only bundle requires an application-update manifest')
     application = artifact_directory / archive_name
     if sha256(application) != manifest['sha256'].lower():
         raise ValueError('Application ZIP checksum mismatch')
-    config = config_text(roots).encode('utf-8')
+    config = None if upgrade_only else config_text(roots).encode('utf-8')
     installer_bytes = Path(installer_path).read_bytes()
     manifest['installer'] = dict(script=INSTALLER, sha256=hashlib.sha256(installer_bytes).hexdigest())
     manifest_bytes = (json.dumps(manifest, indent=2) + '\n').encode('utf-8')
@@ -134,18 +164,21 @@ def build_bundle(artifact_directory, roots, installer_path=BASE / 'scripts' / IN
             'if not "%setupResult%"=="0" echo Setup failed. Read the messages above for backup or recovery details.',
             'pause', 'exit /b %setupResult%', '',
         ]).encode('ascii')
-    entries = {'Install Enhanced.cmd': launcher(False), 'Upgrade Enhanced.cmd': launcher(True), INSTALLER: installer_bytes,
-               'release-manifest.json': manifest_bytes, 'config.txt': config,
-               'README-FIRST.txt': README.encode('utf-8')}
-    output = artifact_directory / (FOLDER + '.zip')
-    temporary = artifact_directory / (FOLDER + '.next.zip')
+    entries = {'Upgrade Enhanced.cmd': launcher(True), INSTALLER: installer_bytes,
+               'release-manifest.json': manifest_bytes,
+               'README-FIRST.txt': (UPGRADE_README if upgrade_only else README).encode('utf-8')}
+    if not upgrade_only:
+        entries.update({'Install Enhanced.cmd': launcher(False), 'config.txt': config})
+    folder = 'LANStream-Enhanced-Upgrade' if upgrade_only else FOLDER
+    output = artifact_directory / (folder + '.zip')
+    temporary = artifact_directory / (folder + '.next.zip')
     with zipfile.ZipFile(temporary, 'w') as bundle:
-        info = zipfile.ZipInfo.from_file(application, FOLDER + '/' + archive_name)
+        info = zipfile.ZipInfo.from_file(application, folder + '/' + archive_name)
         info.create_system, info.external_attr, info.extra = 0, 0x20, b''
         with application.open('rb') as source, bundle.open(info, 'w') as target:
             shutil.copyfileobj(source, target)
         for name, data in entries.items():
-            info = zipfile.ZipInfo(FOLDER + '/' + name)
+            info = zipfile.ZipInfo(folder + '/' + name)
             info.create_system, info.external_attr, info.extra = 0, 0x20, b''
             bundle.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
     with zipfile.ZipFile(temporary) as bundle:
@@ -153,7 +186,8 @@ def build_bundle(artifact_directory, roots, installer_path=BASE / 'scripts' / IN
             raise RuntimeError('Bundle CRC verification failed')
     temporary.replace(output)
     # Personal output stays alongside the ignored release artifacts, never source/config.txt.
-    (artifact_directory / 'config.n100.txt').write_bytes(config)
+    if config is not None:
+        (artifact_directory / 'config.n100.txt').write_bytes(config)
     (artifact_directory / INSTALLER).write_bytes(installer_bytes)
     manifest_path.write_bytes(manifest_bytes)
     digest = sha256(output)
@@ -164,9 +198,11 @@ def build_bundle(artifact_directory, roots, installer_path=BASE / 'scripts' / IN
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', action='append', required=True, help='Private root; saved only under artifacts/')
+    parser.add_argument('--root', action='append', default=[], help='Private root; saved only under artifacts/')
+    parser.add_argument('--upgrade-only', action='store_true', help='Bundle an application update without private configuration')
+    parser.add_argument('--artifact-directory', type=Path, default=BASE / 'artifacts')
     args = parser.parse_args()
-    output = build_bundle(BASE / 'artifacts', args.root)
+    output = build_bundle(args.artifact_directory, args.root, upgrade_only=args.upgrade_only)
     print(json.dumps(dict(bundle=str(output), bytes=output.stat().st_size, sha256=sha256(output))))
 
 

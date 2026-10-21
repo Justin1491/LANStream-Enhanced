@@ -23,7 +23,8 @@ class N100Bundle(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.work = Path(self.temp.name)
         self.installer = self.work / bundle.INSTALLER
-        self.installer.write_text("param([string]$ManifestPath,[string]$ConfigTemplatePath,[switch]$Upgrade)\n"
+        self.installer.write_text("param([string]$ZipPath,[string]$ManifestPath,[string]$ConfigTemplatePath,[switch]$Upgrade)\n"
+                                  "if ((Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json).package_kind -eq 'application-update' -and (-not (Test-Path -LiteralPath $ZipPath))) { exit 7 }\n"
                                   "if ($Upgrade) { if ($ConfigTemplatePath) { exit 9 }; [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'upgrade-ok.txt'),'upgrade'); exit 0 }\n"
                                   "if (-not (Test-Path -LiteralPath $ConfigTemplatePath)) { exit 8 }\n"
                                   "[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'launcher-ok.txt'),[IO.File]::ReadAllText($ConfigTemplatePath))\nexit 0\n", encoding='ascii')
@@ -69,6 +70,39 @@ class N100Bundle(unittest.TestCase):
             self.build()
         self.assertFalse((self.work / (bundle.FOLDER + '.zip')).exists())
         self.assertFalse((self.work / 'config.n100.txt').exists())
+
+    def app_update_bundle(self):
+        self.application = self.work / 'LANStream-Enhanced-Windows-x64-Update.zip'
+        with zipfile.ZipFile(self.application, 'w') as archive:
+            archive.writestr('LANStream-Enhanced/LANStream.exe', b'Fictional updated app')
+            archive.writestr('LANStream-Enhanced/_internal/runtime', b'Fictional runtime')
+        self.manifest.write_text(json.dumps(dict(archive=self.application.name,
+            sha256=bundle.sha256(self.application), revision='fictional-update',
+            package_kind='application-update')), encoding='utf-8')
+        return bundle.build_bundle(self.work, [], self.installer, upgrade_only=True)
+
+    def test_app_update_bundle_needs_no_private_config_or_first_install_launcher(self):
+        output = self.app_update_bundle()
+        with zipfile.ZipFile(output) as archive:
+            prefix = 'LANStream-Enhanced-Upgrade/'
+            self.assertEqual(set(archive.namelist()), {prefix + name for name in (
+                self.application.name, bundle.INSTALLER, 'Upgrade Enhanced.cmd',
+                'release-manifest.json', 'README-FIRST.txt')})
+            self.assertEqual(archive.read(prefix + self.application.name), self.application.read_bytes())
+            manifest = json.loads(archive.read(prefix + 'release-manifest.json'))
+            self.assertEqual(manifest['installer']['sha256'],
+                hashlib.sha256(archive.read(prefix + bundle.INSTALLER)).hexdigest())
+        self.assertFalse((self.work / 'config.n100.txt').exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows CMD launcher')
+    def test_app_update_launcher_passes_the_verified_archive_without_a_config(self):
+        with zipfile.ZipFile(self.app_update_bundle()) as archive:
+            archive.extractall(self.work / 'Update & Café')
+        folder = self.work / 'Update & Café' / 'LANStream-Enhanced-Upgrade'
+        result = subprocess.run(['cmd', '/d', '/c', 'Upgrade Enhanced.cmd'], cwd=folder,
+                                input=b'\r\n', capture_output=True, timeout=40)
+        self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode(errors='replace'))
+        self.assertEqual((folder / 'upgrade-ok.txt').read_text(), 'upgrade')
 
     def test_unsafe_or_duplicate_mapping_cannot_become_config(self):
         for roots in ([], ['relative'], [r'C:\Media' + '\nport=8060'],

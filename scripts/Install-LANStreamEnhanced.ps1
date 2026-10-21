@@ -210,7 +210,7 @@ function Assert-LanStreamInstallPaths {
 }
 
 function Assert-LanStreamZipEntries {
-    param($Archive)
+    param($Archive, [switch]$ApplicationUpdate)
     $names = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in $Archive.Entries) {
         $name = $entry.FullName
@@ -224,7 +224,16 @@ function Assert-LanStreamZipEntries {
         }
         if (-not $names.Add($name.TrimEnd('/'))) { throw 'ZIP contains duplicate Windows paths.' }
     }
-    foreach ($required in @('LANStream.exe', 'ffmpeg.exe', 'ffprobe.exe', '7z.exe', '7z.dll')) {
+    if ($ApplicationUpdate) {
+        foreach ($name in $names) {
+            $relative = $name.Substring('LANStream-Enhanced'.Length).TrimStart('/')
+            if ($relative -imatch '^(config\.txt|cache|ffmpeg(?:-nvenc)?\.exe|ffprobe\.exe|7z(?:z)?\.exe|7z\.dll)(/|$)') {
+                throw 'Application-update ZIP must not replace saved configuration, cache or media tools.'
+            }
+        }
+    }
+    $requiredFiles = if ($ApplicationUpdate) { @('LANStream.exe') } else { @('LANStream.exe', 'ffmpeg.exe', 'ffprobe.exe', '7z.exe', '7z.dll') }
+    foreach ($required in $requiredFiles) {
         if (-not $names.Contains('LANStream-Enhanced/' + $required)) { throw 'ZIP is missing a required portable-package component.' }
     }
     if (-not @($Archive.Entries | Where-Object { $_.FullName.StartsWith('LANStream-Enhanced/_internal/') -and $_.Length -gt 0 }).Count) {
@@ -567,7 +576,8 @@ function Invoke-LanStreamUpgrade {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $archive = [IO.Compression.ZipFile]::OpenRead($zip)
         try {
-            Assert-LanStreamZipEntries $archive
+            $applicationUpdate = $manifest.package_kind -ceq 'application-update'
+            Assert-LanStreamZipEntries $archive -ApplicationUpdate:$applicationUpdate
             if (@($archive.Entries | Where-Object { $_.FullName -imatch '^LANStream-Enhanced/cache/' -and -not $_.FullName.EndsWith('/') }).Count) { throw 'Upgrade ZIP must not contain cache files; the complete existing cache is preserved.' }
         }
         finally { $archive.Dispose() }
@@ -595,6 +605,14 @@ function Invoke-LanStreamUpgrade {
         Write-Host ('Backup retained: ' + $backup)
         Assert-LanStreamUpgradeTree $backup
         [IO.File]::Copy((Join-Path $backup 'config.txt'), (Join-Path $replacement 'config.txt'), $true)
+        if ($applicationUpdate) {
+            foreach ($tool in @('ffmpeg.exe', 'ffprobe.exe', 'ffmpeg-nvenc.exe', '7z.exe', '7z.dll', '7zz.exe', 'ffmpeg-LICENSE.txt', '7zip-LICENSE.txt')) {
+                $sourceTool = Join-Path $backup $tool
+                if (Test-Path -LiteralPath $sourceTool -PathType Leaf) {
+                    [IO.File]::Copy($sourceTool, (Join-Path $replacement $tool), $false)
+                }
+            }
+        }
         Copy-LanStreamUpgradeCache (Join-Path $backup 'cache') (Join-Path $replacement 'cache')
         Assert-LanStreamUpgradeTree $stage
         Assert-LanStreamNoReparsePoint $parent

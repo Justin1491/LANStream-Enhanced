@@ -2,7 +2,7 @@ name: Windows playback diagnostics
 
 on:
   push:
-    branches: [main, codex/windows-hls-startup]
+    branches: [main, codex/windows-hls-startup, codex/windows-upgrade-bundle]
   workflow_dispatch:
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
         run: python -m pip install -r requirements.txt pyinstaller
       - name: Check Windows ownership, listener and HLS startup (no FFmpeg encoding)
         run: >-
-          python -B -m unittest -v tests.test_hls_streams tests.test_launcher tests.test_n100_bundle
+          python -B -m unittest -v tests.test_hls_streams tests.test_launcher tests.test_n100_bundle tests.test_installer
           tests.test_app.ExplorerRoutes.test_hls_preparation_waits_without_a_media_503_and_reuses_encoder
           tests.test_app.ExplorerRoutes.test_hls_playlist_serves_completed_segments_with_ranges_and_scope_checks
           tests.test_app.ExplorerRoutes.test_hls_rejects_nonfinite_start_and_reports_encoder_failure
@@ -72,7 +72,6 @@ jobs:
           retention-days: 14
           if-no-files-found: error
       - name: Package the installed-app update
-        if: github.ref == 'refs/heads/main'
         shell: pwsh
         run: |
           $folder = 'release/LANStream-Enhanced'
@@ -86,12 +85,23 @@ jobs:
           Compress-Archive -Path $folder -DestinationPath 'release/LANStream-Enhanced-Windows-x64-Update.zip'
           $hash = (Get-FileHash 'release/LANStream-Enhanced-Windows-x64-Update.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  LANStream-Enhanced-Windows-x64-Update.zip" | Set-Content -Encoding ascii 'release/SHA256SUMS.txt'
+          $manifest = [ordered]@{ archive = 'LANStream-Enhanced-Windows-x64-Update.zip'; sha256 = $hash; revision = '${{ github.sha }}'; package_kind = 'application-update' }
+          $manifest | ConvertTo-Json | Set-Content -Encoding utf8 'release/release-manifest.json'
+          python -B scripts/build_n100_bundle.py --upgrade-only --artifact-directory release
+          if ($LASTEXITCODE -ne 0) { throw 'Upgrade bundle build failed' }
+      - name: Verify real portable upgrade, saved data and rollback (no encoding)
+        shell: pwsh
+        run: |
+          $env:LANSTREAM_UPGRADE_ZIP = (Resolve-Path 'release/LANStream-Enhanced-Windows-x64-Update.zip').Path
+          $env:LANSTREAM_UPGRADE_MANIFEST = (Resolve-Path 'release/release-manifest.json').Path
+          python -B -m unittest -v tests.test_upgrade
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: github.ref == 'refs/heads/main'
         with:
           name: LANStream-Enhanced-Windows-x64-Release
           path: |
             release/LANStream-Enhanced-Windows-x64-Update.zip
             release/SHA256SUMS.txt
+            release/LANStream-Enhanced-Upgrade.zip
+            release/LANStream-Enhanced-Upgrade.zip.sha256
           retention-days: 30
           if-no-files-found: error

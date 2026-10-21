@@ -107,6 +107,15 @@ class PortableUpgrade(unittest.TestCase):
             package.extractall(self.work / 'unpacked')
         self.target = self.work / 'Enhanced'
         (self.work / 'unpacked' / 'LANStream-Enhanced').rename(self.target)
+        application_update = json.loads(self.manifest.read_text(encoding='utf-8-sig')).get('package_kind') == 'application-update'
+        if application_update:
+            # Local Windows tool stand-ins exit without encoding; only app startup is tested.
+            stand_in = Path(os.environ['SystemRoot']) / 'System32' / 'where.exe'
+            for tool in ('ffmpeg.exe', 'ffprobe.exe', '7z.exe', '7z.dll', 'ffmpeg-nvenc.exe'):
+                shutil.copyfile(stand_in, self.target / tool)
+        preserved_tools = {tool: hashlib.sha256((self.target / tool).read_bytes()).hexdigest()
+                           for tool in ('ffmpeg.exe', 'ffprobe.exe', '7z.exe', '7z.dll', 'ffmpeg-nvenc.exe')
+                           if (self.target / tool).exists()}
         media = self.work / 'Fictional media'
         media.mkdir()
         for filename in ('first.mp4', 'second.mp4', 'private.txt'):
@@ -114,7 +123,7 @@ class PortableUpgrade(unittest.TestCase):
         media_before = self.fingerprint(media)
         self.profiles = [('FictionalFirstPassword', 'first.mp4'), ('FictionalSecondPassword', 'second.mp4')]
         self.config = ('# Exact bytes, custom settings, two private profiles\r\nport=8061\r\n'
-                       'use_master_password=false\r\nmaster_password=\r\ntranscoder=software\r\n'
+                       'use_master_password=false\r\nmaster_password=\r\ntranscoder=qsv\r\n'
                        'automatic_indexing=false\r\nthumbnail_workers=1\r\n'
                        'directory_cache_ttl=123\r\ndirectory_scan_timeout=19\r\n'
                        'low_bandwidth_resolution=1280x720\r\nlow_bandwidth_bitrate=3M\r\n'
@@ -168,6 +177,8 @@ class PortableUpgrade(unittest.TestCase):
                 self.assertEqual(saved_files[name], digest)
             self.assertFalse((self.target / 'old-only.private').exists())
             self.assert_preserved()
+            for tool, digest in preserved_tools.items():
+                self.assertEqual(hashlib.sha256((self.target / tool).read_bytes()).hexdigest(), digest)
             self.assertIsNone(unrelated.poll())
             backup_before = self.fingerprint(backup)
             # Fail after the real replacement binds 8061, proving owned-process stop and restart.
@@ -191,7 +202,7 @@ class PortableUpgrade(unittest.TestCase):
                                   + ') | ForEach-Object { Stop-LanStreamUpgradeProcess $_ ' + literal(self.target) + ' }')
             self.assert_result(stopped)
             (self.target / 'config.txt').write_text('port=8061\nuse_master_password=false\nmaster_password=\n'
-                                                  'transcoder=software\nautomatic_indexing=false\n'
+                                                  'transcoder=qsv\nautomatic_indexing=false\n'
                                                   + str(media) + '\n', encoding='utf-8')
             passwordless = self.run_ps('$p=Start-LanStreamUpgradeProcess ' + literal(self.target)
                                        + ' ' + literal(self.work / 'passwordless') + '; Wait-LanStreamUpgradeHealthy $p')
