@@ -3,9 +3,32 @@
 Windows QSV diagnostics reproduced successful encoding with no published segment
 until about 42 seconds. The first playlist contained a 42.042-second segment,
 despite the requested two-second HLS interval. That exceeds the older client's
-20-second playlist timeout. This build requests IDR frames at the scheduled QSV
-segment boundaries; the updated executable still needs verification on the same
-Windows hardware. No software encoding comparison is required.
+20-second playlist timeout. Requesting IDR frames at the scheduled QSV segment
+boundaries reduced first publication to 2.5 seconds on the same Windows hardware.
+Normal and Low Bandwidth playback were verified in Mac Safari and manually on a
+physical iPhone. No additional software encoding comparison was performed.
+
+## Verified Windows result — October 21, 2026
+
+The tested executable was built from `7f1be19` in
+[Windows run 39593003827](https://github.com/Justin1491/LANStream-Enhanced/actions/runs/39593003827).
+Its SHA-256 was verified against the running authenticated server report:
+`39e63cc9383ccf9b09ef04a7850d18e9c788d132c96eb8ede7b964683ccc94f8`.
+The selected backend remained QSV, using the same representative input and audio
+track as the baseline.
+
+| Trial | First publication | First segment | Mac Safari result |
+| --- | --- | --- | --- |
+| Before the IDR change, Normal | 42.4–43.1 s | 42.042 s | Exceeds the legacy 20 s startup timeout. |
+| Updated Normal | 2.5 s | 2.002 s | Advancing 1080×1920 video, no media error. |
+| Updated Low Bandwidth | 5.0 s | 2.002 s | Advancing 270×480 video, no media error. |
+| Updated Low, seek forward 30 s | 4.8 s | 2.002 s | Playback resumes at the requested position. |
+
+All updated first playlists returned HTTP 200 with target duration 2. The user
+confirmed moving picture and sound in both quality modes on their physical
+iPhone. These observations establish the fix for this Windows QSV setup and
+representative input; they do not cover every encoder, input or device.
+Private media and detailed browser reports remain local and are not in Git.
 
 ## Run the reviewed diagnostic build
 
