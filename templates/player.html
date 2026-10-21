@@ -85,10 +85,11 @@ function playbackReport(report){
   width:video.videoWidth||0,height:video.videoHeight||0,error:video.error?video.error.code:null}},null,2);
 }
 async function prepareHls(url,generation){
- const deadline=Date.now()+90000;
+ const controller=new AbortController();
+ const timeout=window.setTimeout(()=>controller.abort(),90000);
  try{
   while(generation===hlsSerial){
-   const response=await fetch(url+'&prepare=1',{cache:'no-store'});
+   const response=await fetch(url+'&prepare=1',{cache:'no-store',signal:controller.signal});
    const report=await response.json();
    if(generation!==hlsSerial)return;
    playbackReport(report);
@@ -98,15 +99,14 @@ async function prepareHls(url,generation){
    if(report.state==='ready'){
     preparing=false;video.src=url;video.load();video.play().catch(playbackRejected);return;
    }
-   if(Date.now()>=deadline){
-    preparing=false;msg('The server has not published a playable stream after 90 seconds. Open Playback details.');return;
-   }
    msg('Preparing playback…');
    await new Promise(resolve=>window.setTimeout(resolve,1000));
   }
  }catch(_){
-  if(generation===hlsSerial){preparing=false;msg('Unable to check playback startup. Reload the page and try again.');}
- }
+  if(generation===hlsSerial){preparing=false;msg(controller.signal.aborted
+   ?'The server has not published a playable stream after 90 seconds. Open Playback details.'
+   :'Unable to check playback startup. Reload the page and try again.');}
+ }finally{window.clearTimeout(timeout);}
 }
 function transcode(at){
  hlsResumeAt=null;needsPlayGesture=false;

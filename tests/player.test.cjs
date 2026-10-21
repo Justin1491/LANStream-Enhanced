@@ -33,7 +33,7 @@ function player(direct = true, nativeHls = false, fetcher = async () => ({ok:tru
   Object.assign(elements.video, {readyState:1, querySelectorAll:() => [], load() {},
     canPlayType: type => nativeHls && type === 'application/vnd.apple.mpegurl' ? 'maybe' : ''});
   const window = Object.assign(new EventTarget(), {setTimeout, clearTimeout});
-  const context = vm.createContext({document, window, fetch:fetcher});
+  const context = vm.createContext({document, window, fetch:fetcher, AbortController});
   vm.runInContext(script.replace('{{ "true" if native else "false" }}', String(direct))
     .replace('{{ duration }}', '60').replace(/{{.*?}}/g, '"/fixture"'), context);
   return {document, window, qualityModes, ...elements};
@@ -280,6 +280,69 @@ test('failed HLS startup shows the server failure without loading failed media',
   assert.match(p.playerMessage.textContent, /server.*encoder.*failed/i);
   assert.match(p.playbackReport.textContent, /"exit_code": 3/);
   assert.equal(p.playbackDiagnostics.hidden, false);
+});
+
+for (const stalled of ['request', 'response body']) {
+  test(`HLS preparation aborts a stalled ${stalled} at its deadline and Play can retry`, async () => {
+    let requests = 0, signal;
+    const p = player(false, true, async (url, options) => {
+      requests++;
+      if (requests > 1) return {ok:true, json:async () => ({state:'ready'})};
+      signal = options.signal;
+      const pending = new Promise((resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('Aborted')), {once:true});
+      });
+      return stalled === 'request' ? pending : {ok:true, json:() => pending};
+    });
+    let expire;
+    const cleared = [];
+    p.window.setTimeout = (callback, delay) => {
+      assert.equal(delay, 90000);
+      expire = callback;
+      return 42;
+    };
+    p.window.clearTimeout = timer => cleared.push(timer);
+    p.video.pause = () => {};
+    p.video.play = () => Promise.resolve();
+    p.window.dispatchEvent(new Event('DOMContentLoaded'));
+    await new Promise(setImmediate);
+    assert.equal(typeof expire, 'function', 'Preparation must arm a deadline before awaiting the network');
+    expire();
+    await new Promise(setImmediate);
+    assert.equal(signal.aborted, true);
+    assert.equal(p.video.src, undefined);
+    assert.match(p.playerMessage.textContent, /after 90 seconds/);
+    assert.deepEqual(cleared, [42]);
+    p.togglePlay.onclick();
+    await new Promise(setImmediate);
+    assert.equal(requests, 2, 'Play must start a new preparation after timeout');
+    assert.match(p.video.src, /-2&start=0&audio=$/);
+    assert.deepEqual(cleared, [42, 42], 'Successful preparation also clears its timer');
+  });
+}
+
+test('an expired old HLS preparation cannot interrupt a newer preparation', async () => {
+  let release;
+  const p = player(false, true, (url, {signal} = {}) => url.includes('-1&')
+    ? new Promise((resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('Aborted'))))
+    : new Promise(resolve => { release = resolve; }));
+  const deadlines = [];
+  p.window.setTimeout = callback => { deadlines.push(callback); return deadlines.length; };
+  p.window.clearTimeout = () => {};
+  p.video.pause = () => {};
+  p.video.play = () => Promise.resolve();
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  const low = p.qualityModes.find(radio => radio.value === 'low');
+  low.checked = true;
+  low.dispatchEvent(new Event('change'));
+  const message = p.playerMessage.textContent;
+  assert.equal(deadlines.length, 2);
+  deadlines[0]();
+  await new Promise(setImmediate);
+  assert.equal(p.playerMessage.textContent, message);
+  release({ok:true, json:async () => ({state:'ready'})});
+  await new Promise(setImmediate);
+  assert.match(p.video.src, /-2&start=0&audio=&low=1$/);
 });
 
 test('late readiness for a replaced generation cannot restart old playback', async () => {

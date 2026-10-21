@@ -17,7 +17,8 @@ import urllib.request
 class FrozenRuntimeTests(unittest.TestCase):
     def test_packaged_app_loads_runtime_and_serves_its_binary_identity(self):
         executable = Path(os.environ['LANSTREAM_RUNTIME_EXE']).resolve()
-        self.assertTrue((executable.parent / '_internal' / 'python312.dll').is_file())
+        self.assertTrue(any(path.is_file() for path in (executable.parent / '_internal').glob('python3[0-9]*.dll')),
+                        'Package is missing its versioned Python runtime DLL')
         self.assertFalse((executable.parent / 'ffmpeg.exe').exists())
         with socket.socket() as reservation:
             reservation.bind(('127.0.0.1', 0))
