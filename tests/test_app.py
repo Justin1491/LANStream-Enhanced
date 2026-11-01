@@ -98,6 +98,33 @@ class ExplorerRoutes(unittest.TestCase):
         finally:
             scheduler.close()
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows short paths')
+    def test_short_root_supports_thumbnail_preparation_and_image_navigation(self):
+        import ctypes
+        import threading
+
+        short = ctypes.create_unicode_buffer(32768)
+        if not ctypes.windll.kernel32.GetShortPathNameW(str(self.root), short, len(short)):
+            self.skipTest('Windows short path unavailable')
+        short_root = Path(short.value)
+        if short_root == self.root.resolve():
+            self.skipTest('Windows did not provide a distinct short path')
+
+        (self.root / '01.png').touch()
+        (self.root / '02.png').touch()
+        self.config.write_text(f'port=8061\n<alice>\n{short_root}\n-/Private\n', encoding='utf-8')
+        self.warm()
+        profile = self.server.load_profiles()[0]
+        jobs = list(self.server.thumbnail_jobs(0, profile, short_root, '', ('Private',), threading.Event()))
+        self.assertEqual({source.name for source, _, _ in jobs},
+                         {'01.png', '02.png', 'Café Clip 2.mp4', 'Café Clip 10.mp4'})
+        for source, output, _ in jobs:
+            self.assertEqual(output, self.server.cache_path('thumbs', 0, self.root, source))
+        navigation = self.client.get('/api/image-navigation/0/01.png')
+        self.assertEqual(navigation.status_code, 200)
+        self.assertEqual(navigation.get_json()['next']['relpath'], '02.png')
+        self.assertEqual(self.client.get('/api/browse/0/Private').status_code, 404)
+
     def test_search_exclusions_scope_and_full_parent_paths(self):
         self.warm()
         bob = self.server.app.test_client()

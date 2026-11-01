@@ -503,6 +503,7 @@ def natural_sort_key(value: str) -> list[Any]:
 
 
 def image_siblings(root: Path, source: Path) -> tuple[str | None, str | None]:
+    root = root.resolve(strict=False)
     try:
         items = [
             p for p in source.parent.iterdir()
@@ -541,7 +542,7 @@ def cache_root_dir(kind: str, root: Path) -> Path:
 
 
 def cache_path(kind: str, root_index: int, root: Path, source: Path) -> Path:
-    rel = source.relative_to(root)
+    rel = source.relative_to(root.resolve(strict=False))
     return cache_root_dir(kind, root) / rel.parent / f"{rel.name}.jpg"
 
 
