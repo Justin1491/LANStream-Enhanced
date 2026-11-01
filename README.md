@@ -58,6 +58,8 @@ Two thumbnail workers are used by default. Set `thumbnail_workers=1` if preview 
 
 Compatible sources play directly when the browser supports them. Sources requiring conversion, including HEVC/H.265 video, use H.264 transcoding with stereo AAC audio. The player provides seeking, audio and supported subtitle track selection, fullscreen controls, and a Favorite button.
 
+Video metadata is remembered in server memory for up to five minutes to avoid repeated FFprobe work when opening the same file. File identity, size, or timestamp changes trigger a new probe; restarting the server clears the cache.
+
 - **Normal** preserves the normal playback profile.
 - **Low Bandwidth** applies a configurable resolution and bitrate. Defaults are `854x480` and `2M`; change `low_bandwidth_resolution` and `low_bandwidth_bitrate` in `config.txt` and restart. Quality is selected manually.
 - **Native HLS delivery** serves generated playback to browsers such as Safari using playlists and short MP4 segments, including Low Bandwidth playback. Other browsers retain streamed MP4 delivery.
