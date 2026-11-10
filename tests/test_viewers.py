@@ -52,6 +52,7 @@ class ViewerRoutes(unittest.TestCase):
         cls.scheduler.close()
         cls.index.close()
         if cls.imported_app:
+            cls.server.cleanup_service.close()
             cls.original_scheduler.close()
             cls.original_index.close()
         # Failed PDF opens can retain native file handles in exception cycles.

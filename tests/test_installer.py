@@ -234,6 +234,29 @@ class InstallerSafety(unittest.TestCase):
             self.assertFalse(self.target.exists())
             self.assertEqual(listener.getsockname()[1], 8061)
 
+    def test_port_guard_rejects_bound_sockets_without_listener_enumeration(self):
+        families = [(socket.AF_INET, '127.0.0.1')]
+        if socket.has_ipv6:
+            families.append((socket.AF_INET6, '::1'))
+        for family, address in families:
+            with self.subTest(address=address), socket.socket(family) as reserved:
+                if family == socket.AF_INET6:
+                    reserved.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                try:
+                    reserved.bind((address, 8061))
+                except OSError:
+                    self.skipTest('Port 8061 is already occupied; its owner must be preserved')
+                self.assert_rejected('Assert-LanStreamNewInstallPort', 'already in use')
+
+    def test_port_guard_releases_its_probe(self):
+        with socket.socket() as check:
+            try:
+                check.bind(('127.0.0.1', 8061))
+            except OSError:
+                self.skipTest('Port 8061 is already occupied; its owner must be preserved')
+        result = self.run_ps('Assert-LanStreamNewInstallPort; Assert-LanStreamNewInstallPort')
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+
     def test_tool_timeout_is_reported_and_owned_child_is_stopped(self):
         prefix = self.work / 'tool'
         body = ('Invoke-LanStreamTool -FilePath ' + literal(POWERSHELL)
@@ -262,6 +285,17 @@ class InstallerSafety(unittest.TestCase):
         self.assertEqual(data['Text'], text)
         self.assertEqual(data['MediaRoot'], [str(self.media)])
         self.assertEqual(data['Text'].count('__LANSTREAM_SETUP_PASSWORD__'), 1)
+
+    def test_template_preserves_cleanup_opt_in_and_rejects_invalid_boolean(self):
+        path = self.work / 'cleanup-config-template.txt'
+        for value in ('false', 'true'):
+            text = self.template().replace('automatic_indexing=false', 'automatic_indexing=false\r\nlibrary_cleanup_enabled=' + value)
+            path.write_bytes(text.encode('utf-8'))
+            result = self.run_ps('Read-LanStreamConfigTemplate -Path ' + literal(path) + ' | ConvertTo-Json -Compress')
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+            self.assertEqual(json.loads(result.stdout.decode('utf-8-sig'))['Text'], text)
+        path.write_bytes(self.template().replace('automatic_indexing=false', 'library_cleanup_enabled=maybe').encode('utf-8'))
+        self.assert_rejected('Read-LanStreamConfigTemplate -Path ' + literal(path), 'template')
 
     def test_template_rejects_wrong_port_extra_profiles_and_settings_injection(self):
         for text in (self.template().replace('port=8061', 'port=8060'),

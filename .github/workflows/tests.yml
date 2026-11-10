@@ -32,4 +32,4 @@ jobs:
       - name: Run Python tests
         run: python -B -m unittest discover -s tests -v
       - name: Run JavaScript tests
-        run: node --test tests/player.test.cjs tests/explorer.test.cjs
+        run: node --test tests/player.test.cjs tests/explorer.test.cjs tests/cleanup.test.cjs

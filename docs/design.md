@@ -64,7 +64,10 @@ root ID and relative path. They survive index refresh/rebuild and missing media.
 
 ## Safety and release
 
-No media writes, production changes, cloud backend or port-forward changes.
+The original browsing/indexing work makes no media writes. The separately enabled
+Library Cleanup feature adds recoverable Trash and confirmed permanent deletion;
+see library-cleanup.md for its authorization and recovery model. No production
+changes, cloud backend or port-forward changes are part of development.
 All development data uses synthetic media and an isolated cache/config. The
 enhanced example uses port 8061. Builds remain portable Windows PyInstaller
 builds. Actual N100 QSV, SMB latency, Safari and Teleport playback require the

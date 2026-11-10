@@ -25,6 +25,7 @@ class ThumbnailExtractionTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         if cls.imported_app:
+            cls.server.cleanup_service.close()
             cls.server.directory_index.close()
             cls.server.image_scheduler.close()
         cls.temp.cleanup()

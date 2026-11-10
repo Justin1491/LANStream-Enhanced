@@ -8,6 +8,13 @@ const vm = require('node:vm');
 const script = fs.readFileSync(path.join(__dirname, '../static/explorer.js'), 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+test('Details shows saved durations without wrapping hours or inventing missing values', async () => {
+  const e = explorer(undefined, {items:[{name:'Long clip',kind:'video',url:'/video',size:10,duration:90061}, {name:'Unknown clip',kind:'video',url:'/video',size:10,duration:null}]});
+  await flush();
+  const durations = e.elements.explorerItems.children.map(row => row.children[0].children.find(node => node.className === 'item-duration')?.textContent);
+  assert.deepEqual(durations, ['25:01:01', '—']);
+});
+
 function explorer(automaticIndexing, resultOverrides = {}) {
   const images = [], checks = [], observers = [], timers = new Map();
   let now = 0, timerSequence = 0;

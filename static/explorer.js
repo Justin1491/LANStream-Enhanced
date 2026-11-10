@@ -9,7 +9,7 @@
   const density = document.getElementById('gridDensity'), previous = document.getElementById('previousPage'), next = document.getElementById('nextPage');
   const csrf = document.querySelector('meta[name="lanstream-csrf"]').content;
   let controller, polling, debounce, sequence = 0, observer, stopped = false, state = {};
-  let thumbnailImages = new Map(), thumbnailWork;
+  let thumbnailImages = new Map(), thumbnailWork, viewMode;
   function resetThumbnails() {
     if (thumbnailWork) thumbnailWork.controller.abort();
     thumbnailWork = {controller: new AbortController(), queue: [], active: 0, started: new WeakSet()};
@@ -29,10 +29,13 @@
   function save(key, value) { try { localStorage.setItem(key, value); } catch (_) {} }
   function view(mode) {
     if (!['list', 'grid', 'details'].includes(mode)) mode = 'list';
+    const reloadDetails = viewMode && viewMode !== mode && mode === 'details';
+    viewMode = mode;
     items.className = 'explorer-items ' + mode;
     document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-pressed', button.dataset.view === mode));
     document.querySelector('.details-heading').classList.toggle('visible', mode === 'details');
     document.getElementById('densityControl').hidden = mode !== 'grid'; save('lanstream-view', mode);
+    if (reloadDetails && explorer.dataset.mode === 'browse') load(false);
   }
   document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => view(button.dataset.view));
   density.value = preference('lanstream-density', '180');
@@ -50,6 +53,11 @@
     if (bytes < 1024) return bytes + ' B';
     const unit = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)));
     return (bytes / 1024 ** unit).toFixed(1) + ' ' + ['B', 'KB', 'MB', 'GB'][unit];
+  }
+  function duration(seconds) {
+    if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—';
+    const total = Math.floor(seconds);
+    return [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60].map(value => String(value).padStart(2, '0')).join(':');
   }
   async function write(url, data) {
     const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-LANStream-CSRF': csrf}, body: JSON.stringify(data)});
@@ -136,7 +144,7 @@
       }
       const label = element('span', 'item-label'); label.append(element('span', 'item-name', item.name));
       if (explorer.dataset.mode !== 'browse') label.append(element('span', 'item-location', item.location));
-      link.append(preview, label, element('span', 'item-size', item.kind === 'folder' ? '—' : size(item.size)), element('span', 'item-date', item.mtime ? new Date(item.mtime * 1000).toLocaleString() : '—'), element('span', 'item-kind', item.kind));
+      link.append(preview, label, element('span', 'item-size', item.kind === 'folder' ? '—' : size(item.size)), element('span', 'item-duration', item.kind === 'video' ? duration(item.duration) : '—'), element('span', 'item-date', item.mtime ? new Date(item.mtime * 1000).toLocaleString() : '—'), element('span', 'item-kind', item.kind));
       row.append(link); const actions = element('div', 'item-actions');
       if (['folder', 'video'].includes(item.kind)) {
         const favorite = element('button', 'favorite-button', item.favorite ? '★' : '☆'); favorite.type = 'button'; favorite.setAttribute('aria-label', 'Favorite ' + item.name); favorite.setAttribute('aria-pressed', item.favorite);
@@ -150,6 +158,8 @@
       row.append(actions); fragment.append(row);
     }
     items.replaceChildren(fragment); thumbnailImages = nextImages;
+    const missingDurations = document.getElementById('missingDurations');
+    if (missingDurations) missingDurations.hidden = state.sort !== 'duration' || !result.items.some(item => item.kind === 'video' && item.duration == null);
     const scanning = result.state === 'loading';
     status.textContent = scanning ? 'Reading this folder for the first time… SMB enumeration may take a while.' : result.error ? result.error + (result.version ? ' Showing the last cached snapshot.' : '') : result.state === 'stale' ? result.total.toLocaleString() + ' items · cached snapshot, refreshing in the background.' : result.total ? result.total.toLocaleString() + ' items' : 'No matching folders or supported files.';
     if (result.updated_at && !scanning) status.textContent += ' · Updated ' + new Date(result.updated_at * 1000).toLocaleString();
@@ -162,6 +172,7 @@
     clearTimeout(polling); if (controller) controller.abort(); controller = new AbortController(); const current = ++sequence;
     if (!background) resetThumbnails();
     const params = new URLSearchParams(state); if (historyUpdate) history.pushState(null, '', location.pathname + '?' + params);
+    if (viewMode === 'details') params.set('details', '1');
     status.textContent = 'Loading cached results…';
     try { const response = await fetch(explorer.dataset.api + '?' + params, {signal: controller.signal, cache: 'no-store'});
       if (!response.ok) throw Error(response.status === 401 ? 'Sign in again to continue.' : 'Unable to load this folder. Check access and try again.');

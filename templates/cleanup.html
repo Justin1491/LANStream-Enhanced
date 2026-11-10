@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Library Cleanup · LANStream Enhanced{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='cleanup.css') }}">
+<section id="cleanup" data-writes="{{ 'true' if writes_enabled else 'false' }}">
+<h1>Library Cleanup</h1><p class="muted">Compare indexed files and move unwanted copies to recoverable Trash.</p>
+{% if not writes_enabled %}<p class="cleanup-notice">Read-only. File changes require password sign-in, Windows, and <code>library_cleanup_enabled=true</code> in the server configuration.</p>{% endif %}
+<div class="cleanup-tabs" role="group" aria-label="Cleanup view"><button id="libraryTab" type="button" aria-pressed="true">Library</button><button id="trashTab" type="button" aria-pressed="false">Trash</button></div>
+<div class="cleanup-toolbar">
+<label class="cleanup-search">Filename contains<input id="cleanupQuery" type="search" maxlength="500" placeholder="Any part of a filename" autocomplete="off"></label>
+<label>Library<select id="cleanupRoot"><option value="">All accessible libraries</option>{% for root in roots %}<option value="{{ root.id }}" data-index="{{ root.index }}">{{ root.label }}</option>{% endfor %}</select></label>
+<label>Scope<select id="cleanupScope"><option value="all">All accessible libraries</option><option value="library">Selected library</option><option value="folder">Current folder</option><option value="subtree">Current folder + subfolders</option></select></label>
+<label id="cleanupTypeLabel">File type<select id="cleanupType"><option value="all">All supported files</option><option value="videos">Videos</option><option value="pictures">Pictures</option><option value="documents">Documents</option></select></label>
+<label class="cleanup-toggle" id="matchingLabel"><input id="matchingSizes" type="checkbox">Show matching sizes</label>
+<label class="cleanup-toggle" id="thumbnailsLabel"><input id="cleanupThumbnails" type="checkbox">Thumbnails</label>
+</div>
+<div class="cleanup-folder"><span id="cleanupPath">All accessible libraries</span><button id="chooseFolder" type="button">Choose indexed folder</button><button id="refreshCleanup" type="button">Refresh results</button></div>
+<p id="cleanupStatus" role="status" aria-live="polite">Loading indexed files…</p><p id="cleanupCoverage" class="muted"></p>
+<div class="cleanup-table-wrap" tabindex="0" aria-label="Scrollable file table"><table class="cleanup-table"><caption class="sr-only">Library Cleanup files</caption><thead><tr>
+<th><input id="selectCleanupPage" type="checkbox" aria-label="Select this page"></th><th id="previewHeading" hidden>Preview</th>
+<th scope="col"><button type="button" data-sort="name">Filename</button></th><th scope="col"><button type="button" data-sort="location">Location</button></th><th scope="col"><button type="button" data-sort="size">Size</button></th><th scope="col"><button type="button" data-sort="duration">Duration</button></th><th scope="col"><button type="button" id="cleanupDateSort" data-sort="date">Modified</button></th><th scope="col" id="cleanupTypeHeading"><button type="button" data-sort="type">Type</button></th><th scope="col" id="trashStateHeading" hidden>Status</th>
+</tr></thead><tbody id="cleanupRows"></tbody></table></div>
+<p class="muted" id="cleanupHint">Same size, duration, or thumbnail is a comparison clue, not proof of identical contents.</p>
+<div class="cleanup-pagination"><button id="cleanupPrevious" type="button" disabled>← Previous</button><span id="cleanupPage"></span><button id="cleanupNext" type="button" disabled>Next →</button></div>
+<div class="cleanup-actions"><span id="cleanupSelected">0 files selected</span><div><button id="restoreCleanup" type="button" hidden disabled>Restore selected</button><button id="moveCleanup" type="button" disabled>Move to Trash</button><button id="purgeCleanup" class="cleanup-danger" type="button" hidden disabled>Permanently delete selected</button></div></div>
+<p id="cleanupActionStatus" class="cleanup-notice" role="status" aria-live="polite">Trash keeps files on their original storage. Space is freed only after permanent deletion.</p>
+<ul id="cleanupFailures" class="cleanup-failures" aria-label="File operation results"></ul>
+<section id="durationControls" class="cleanup-preparation"><h2>Prepare saved metadata</h2><p class="muted">Duration preparation covers videos in the selected library or folder scope, regardless of filename and matching-size filters. It pauses between files during playback.</p><div class="cleanup-toolbar"><button id="prepareDurations" type="button">Prepare durations</button><button id="retryDurations" type="button">Retry failed durations</button><button id="pauseDurations" type="button" hidden>Pause preparation</button><button id="resumeDurations" type="button" hidden>Resume preparation</button><button id="stopDurations" type="button" hidden>Stop preparation</button><button id="cleanupPrepareThumbnails" type="button">Prepare thumbnails in this folder</button></div><p id="durationStatus" role="status" aria-live="polite"></p></section>
+<section id="trashRecovery" class="cleanup-preparation" hidden><h2>Recover Trash records</h2><p class="muted">If the server's local cache was lost, recover records from the selected library's Trash manifests. Uncertain items are kept for attention; no files are purged automatically.</p><button id="recoverTrash" type="button">Recover selected library's Trash records</button></section>
+</section>
+<dialog id="cleanupConfirm" aria-labelledby="cleanupConfirmTitle"><h2 id="cleanupConfirmTitle"></h2><p id="cleanupConfirmDescription"></p><ul id="cleanupConfirmItems"></ul><p id="cleanupConfirmTotal"></p><div class="cleanup-dialog-actions"><button id="cleanupCancel" type="button">Cancel</button><button id="cleanupConfirmAction" type="button">Confirm</button></div></dialog>
+<dialog id="cleanupFolderDialog" aria-labelledby="cleanupFolderTitle"><h2 id="cleanupFolderTitle">Choose indexed folder</h2><p id="folderPickerPath"></p><div class="cleanup-toolbar"><button id="folderPickerUp" type="button">Up one level</button><button id="folderPickerChoose" type="button">Use this folder</button><button id="folderPickerClose" type="button">Cancel</button></div><p id="folderPickerStatus" role="status"></p><ul id="folderPickerFolders"></ul><div class="cleanup-pagination"><button id="folderPickerPrevious" type="button">Previous folders</button><button id="folderPickerNext" type="button">Next folders</button></div></dialog>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='cleanup.js') }}" defer></script>{% endblock %}

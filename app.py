@@ -52,6 +52,8 @@ SERVER_INSTANCE = secrets.token_hex(6)
 VAAPI_DEVICE = os.environ.get("LANSTREAM_VAAPI_DEVICE", "/dev/dri/renderD128")
 # Serialize cache publication and PyMuPDF work across viewer/thumbnail threads.
 VIEWER_RENDER_LOCK = threading.Lock()
+CLEANUP_ACTIVITY_LOCK = threading.RLock()
+ACTIVE_PROBES = {}
 
 
 def find_media_tool(name: str) -> str:
@@ -82,6 +84,7 @@ def load_settings() -> dict[str, str]:
         "directory_cache_ttl": "300",
         "directory_scan_timeout": "30",
         "automatic_indexing": "true",
+        "library_cleanup_enabled": "false",
         "thumbnail_workers": "2",
         "low_bandwidth_resolution": "854x480",
         "low_bandwidth_bitrate": "2M",
@@ -173,7 +176,10 @@ class StreamTracker:
     ) -> str:
         stream_id = secrets.token_hex(5)
         now = time.monotonic()
-        with self._lock:
+        with CLEANUP_ACTIVITY_LOCK, self._lock:
+            cleanup = globals().get('cleanup_service')
+            if cleanup and cleanup.trash.is_busy(source):
+                abort(409, description='This file has a pending cleanup operation. Try again when it finishes.')
             self._streams[stream_id] = {
                 "id": stream_id,
                 "mode": mode,
@@ -413,6 +419,8 @@ def load_roots() -> list[Path]:
 
 
 def path_is_excluded(path: Path, profile=None) -> bool:
+    if reserved_media_path(path):
+        return True
     profile = active_profile() if profile is None else profile
     if not profile:
         return True
@@ -451,7 +459,13 @@ def get_root(index: int) -> Path:
     return root
 
 
+def reserved_media_path(path):
+    return '.lanstream-trash' in str(path).replace('\\', '/').casefold().split('/')
+
+
 def safe_path(root: Path, relative: str, profile=None) -> Path:
+    if reserved_media_path(root) or reserved_media_path(relative):
+        abort(404)
     try:
         rr = root.resolve(strict=False)
         p = (root / relative).resolve(strict=False)
@@ -461,6 +475,10 @@ def safe_path(root: Path, relative: str, profile=None) -> Path:
 
     if path_is_excluded(p, profile):
         abort(404)
+
+    cleanup = globals().get('cleanup_service')
+    if cleanup and cleanup.trash.is_busy(p):
+        abort(409, description='This file has a pending cleanup operation. Try again when it finishes.')
 
     return p
 
@@ -561,10 +579,30 @@ def probe(path: Path) -> dict[str, Any]:
         "stream_tags=language,title",
         "-of", "json", str(path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if proc.returncode:
-        raise RuntimeError(proc.stderr.strip() or "ffprobe failed")
-    return json.loads(proc.stdout)
+    key = os.path.normcase(os.path.abspath(path))
+    with CLEANUP_ACTIVITY_LOCK:
+        cleanup = globals().get('cleanup_service')
+        if cleanup and cleanup.trash.is_busy(path):
+            raise RuntimeError('This file has a pending cleanup operation.')
+        ACTIVE_PROBES[key] = ACTIVE_PROBES.get(key, 0) + 1
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if proc.returncode:
+            raise RuntimeError(proc.stderr.strip() or "ffprobe failed")
+        return json.loads(proc.stdout)
+    finally:
+        with CLEANUP_ACTIVITY_LOCK:
+            ACTIVE_PROBES[key] -= 1
+            if not ACTIVE_PROBES[key]:
+                ACTIVE_PROBES.pop(key)
+
+
+def probe_with_saved_duration(root, relative, source):
+    from cleanup_jobs import fingerprint
+    before = fingerprint(source)
+    info = probe(source)
+    cleanup_service.save_probe(root, relative, before, info)
+    return info
 
 
 def duration_seconds(info: dict[str, Any]) -> float:
@@ -756,6 +794,10 @@ def _generate_nonvideo_thumbnail(source: Path, output: Path, width: int) -> bool
 
 
 def generate_image(source: Path, output: Path, width: int, generation: int, scheduler: ImageScheduler):
+    with CLEANUP_ACTIVITY_LOCK:
+        cleanup = globals().get('cleanup_service')
+        if cleanup and cleanup.trash.is_busy(source):
+            return
     if not scheduler.is_current(source, output):
         return
 
@@ -1010,8 +1052,11 @@ def explorer_template_context():
         session['csrf_token'] = secrets.token_hex(24)
     favorite_current = False
     if request.endpoint in {'video_detail', 'player'}:
-        profile, root, relative, _ = explorer_context(request.view_args['root_index'], request.view_args['relpath'])
-        favorite_current = directory_index.favorite_flags(profile['id'], [{'root_id': root_id(root), 'rel': relative}])[0]
+        try:
+            profile, root, relative, _ = explorer_context(request.view_args['root_index'], request.view_args['relpath'])
+            favorite_current = directory_index.favorite_flags(profile['id'], [{'root_id': root_id(root), 'rel': relative}])[0]
+        except HTTPException:
+            pass  # Error pages must not repeat the failed media authorization.
     return {'csrf_token': session['csrf_token'], 'favorite_current': favorite_current,
             'automatic_indexing': directory_index.profiles is not None}
 
@@ -1034,6 +1079,8 @@ def explorer_context(root_index, relative=''):
     if not profile or root_index < 0 or root_index >= len(profile['roots']):
         abort(404)
     root = profile['roots'][root_index]
+    if reserved_media_path(root) or reserved_media_path(relative):
+        abort(404)
     base = os.path.normcase(os.path.abspath(root))
     excluded = []
     for entry in profile['excluded']:
@@ -1132,7 +1179,8 @@ def browse_api(root_index, relpath):
     _, root, relpath, excluded = explorer_context(root_index, relpath)
     result = directory_index.listing(root, relpath, **explorer_page_args(),
         sort=request.args.get('sort', 'name'), descending=request.args.get('direction') == 'desc',
-        query=request.args.get('q', '')[:500], excluded=excluded)
+        query=request.args.get('q', '')[:500], excluded=excluded,
+        include_duration=request.args.get('details') == '1')
     return jsonify(explorer_items(result))
 
 
@@ -1479,7 +1527,7 @@ def video_detail(root_index, relpath):
     if not is_video(source):
         abort(404)
 
-    info = probe(source)
+    info = probe_with_saved_duration(root, relpath, source)
     videos, audios, subtitles = stream_lists(info)
     poster = cache_path("posters", root_index, root, source)
     image_scheduler.submit(generation, 0, source, poster, 960)
@@ -1506,7 +1554,7 @@ def player(root_index, relpath):
     source = safe_path(root, relpath)
     if not is_video(source):
         abort(404)
-    info = probe(source)
+    info = probe_with_saved_duration(root, relpath, source)
     _, audios, subtitles = stream_lists(info)
     d = duration_seconds(info)
     return render_template(
@@ -2144,6 +2192,10 @@ def not_found(_):
 @app.errorhandler(403)
 def forbidden(_):
     return render_template("error.html", message="Access outside the configured media roots is not allowed."), 403
+
+
+from cleanup_routes import register_cleanup
+register_cleanup(sys.modules[__name__])
 
 
 if __name__ == "__main__":

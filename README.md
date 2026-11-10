@@ -1,6 +1,6 @@
 # LANStream Enhanced
 
-A folder-native media browser and player for your local network. Browse your existing folders, search across libraries, save Favorites, and open videos, pictures, PDFs, comics, and text in a browser. Your filenames and folder structure stay intact; media files are never modified.
+A folder-native media browser and player for your local network. Browse your existing folders, search across libraries, save Favorites, and open videos, pictures, PDFs, comics, and text in a browser. Browsing and playback leave your media intact. An optional, separate Library Cleanup page can move unwanted files to recoverable Trash.
 
 Enhanced builds on [candre23/LANStream](https://github.com/candre23/LANStream) with persistent directory caching, paginated browsing, background indexing, and a more capable media interface. It runs without a cloud account, metadata matching, or a library import. You can browse while indexing continues in the background.
 
@@ -12,7 +12,7 @@ Enhanced builds on [candre23/LANStream](https://github.com/candre23/LANStream) w
 
 - **List, Grid, and Details views**, with compact List thumbnails, adjustable Grid density, and view preferences remembered per device. Mobile defaults to List.
 - **Server-side pagination** keeps each page to at most 100 items, including folders containing thousands of files.
-- **Whole-folder sorting and filtering**, rather than just filtering the current page. Sort by name, date, size, or type, with folders first and natural filename order such as `Clip 2` before `Clip 10`.
+- **Whole-folder sorting and filtering**, rather than just filtering the current page. Sort by name, date, size, saved duration, or type, with folders first and natural filename order such as `Clip 2` before `Clip 10`. Unknown durations sort last; sorting never probes files.
 - **File type filters** in Browse, Search, and Favorites: All, Videos, Pictures, and Documents. Documents include PDFs, comics, and text/Markdown; folders remain visible for navigation.
 - **Persistent SQLite directory snapshots** make warm revisits possible without repeating a full directory scan. Stale snapshots remain available while a refresh runs; failed or offline scans retain the last good listing and show an error.
 - Breadcrumbs, containing-folder links, and browser Back/Forward support keep your place in the collection.
@@ -28,6 +28,15 @@ Cold network-share scans still depend on the server and network. Caching improve
 - Coverage indicators show how much has been indexed. Search is partial until discovery finishes, and offline results can be stale.
 
 Automatic indexing is enabled by default. Set `automatic_indexing=false` in `config.txt` and restart for on-demand browsing and manual indexing only. This preserves existing snapshots and Favorites. When automatic indexing is enabled, restarting the server resumes discovery, including previously paused tasks.
+
+### Library Cleanup and recoverable Trash
+
+- A separate indexed table provides partial filename search, folder/subfolder scopes, exact-size comparison groups, sortable attributes, and optional cached thumbnails.
+- Explicit background duration preparation saves video lengths for Cleanup and ordinary browsing; it pauses between files during tracked playback.
+- On Windows, opt-in authenticated file changes support recoverable Trash, restore without overwriting, and separately confirmed permanent deletion. No automatic purge runs.
+- Back up the durable `cache/trash.sqlite3` journal and each library's `.lanstream-trash` directory, as well as the rest of the cache. Trash retains media disk space until permanent deletion.
+
+See the [Library Cleanup guide](docs/library-cleanup.md) for enablement, permissions, recovery, and storage limitations. The feature is read-only by default (`library_cleanup_enabled=false`).
 
 ### Persistent Favorites
 

@@ -110,7 +110,7 @@ function Read-LanStreamConfigTemplate {
     $settings = @{}
     $roots = @()
     $profile = $false
-    $known = @('port', 'use_master_password', 'master_password', 'transcoder', 'directory_cache_ttl', 'directory_scan_timeout', 'automatic_indexing', 'thumbnail_workers', 'low_bandwidth_resolution', 'low_bandwidth_bitrate')
+    $known = @('port', 'use_master_password', 'master_password', 'transcoder', 'directory_cache_ttl', 'directory_scan_timeout', 'automatic_indexing', 'library_cleanup_enabled', 'thumbnail_workers', 'low_bandwidth_resolution', 'low_bandwidth_bitrate')
     foreach ($raw in ($text -split '\r\n|\n|\r')) {
         $line = $raw.Trim()
         if (-not $line -or $line.StartsWith('#')) { continue }
@@ -127,7 +127,7 @@ function Read-LanStreamConfigTemplate {
             $key = $key.Trim().ToLowerInvariant()
             $value = $value.Trim()
             if ($known -notcontains $key -or $settings.ContainsKey($key)) { throw 'Config template has an unsupported or duplicate setting.' }
-            if ($key -eq 'automatic_indexing' -and $value -notin @('true', 'false', '1', '0', 'yes', 'no', 'on', 'off')) { throw 'A template automatic indexing setting must be a boolean.' }
+            if ($key -in @('automatic_indexing', 'library_cleanup_enabled') -and $value -notin @('true', 'false', '1', '0', 'yes', 'no', 'on', 'off')) { throw 'A template indexing or cleanup setting must be a boolean.' }
             if ($key -in @('directory_cache_ttl', 'directory_scan_timeout', 'thumbnail_workers')) {
                 $number = 0
                 $maximum = @{ directory_cache_ttl = 86400; directory_scan_timeout = 300; thumbnail_workers = 8 }[$key]
@@ -287,6 +287,22 @@ function Invoke-LanStreamTool {
         return [pscustomobject]@{ ExitCode = $process.ExitCode; TimedOut = $timedOut; Seconds = [math]::Round($timer.Elapsed.TotalSeconds, 3); Output = $out; ErrorOutput = $err }
     }
     finally { $process.Dispose() }
+}
+
+function Assert-LanStreamNewInstallPort {
+    # Listener enumeration can miss occupied ports; an exclusive bind must agree.
+    $families = @([Net.Sockets.AddressFamily]::InterNetwork)
+    if ([Net.Sockets.Socket]::OSSupportsIPv6) { $families += [Net.Sockets.AddressFamily]::InterNetworkV6 }
+    foreach ($family in $families) {
+        $probe = [Net.Sockets.Socket]::new($family, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp)
+        try {
+            $probe.ExclusiveAddressUse = $true
+            $address = [Net.IPAddress]::Any
+            if ($family -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { $probe.DualMode = $false; $address = [Net.IPAddress]::IPv6Any }
+            try { $probe.Bind([Net.IPEndPoint]::new($address, 8061)) }
+            catch { throw 'Port 8061 is already in use or unavailable. No process was stopped.' }
+        } finally { $probe.Dispose() }
+    }
 }
 
 function Assert-LanStreamListener {
@@ -695,6 +711,7 @@ function Invoke-LanStreamInstaller {
         if (@([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | Where-Object { $_.Port -eq 8061 }).Count) {
             throw 'Port 8061 is already in use. No process was stopped and no files were changed.'
         }
+        Assert-LanStreamNewInstallPort
         $zip = Get-LanStreamAbsolutePath $ZipPath
         Assert-LanStreamNoReparsePoint $zip
         if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) { throw 'ZIP was not found.' }
@@ -764,6 +781,7 @@ function Invoke-LanStreamInstaller {
         try {
             foreach ($key in $environment.Keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process'); [Environment]::SetEnvironmentVariable($key, $environment[$key], 'Process') }
             if (@([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | Where-Object { $_.Port -eq 8061 }).Count) { throw 'Port 8061 became occupied before launch.' }
+            Assert-LanStreamNewInstallPort
             $process = Start-Process -FilePath $executable -WorkingDirectory $InstallDirectory -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'application.stdout.txt') -RedirectStandardError (Join-Path $logs 'application.stderr.txt')
         }
         finally { foreach ($key in $saved.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') } }

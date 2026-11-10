@@ -23,6 +23,8 @@ class ExplorerRoutes(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        if hasattr(cls.server, 'cleanup_service'):
+            cls.server.cleanup_service.close()
         if hasattr(cls.server, 'directory_index'):
             cls.server.directory_index.close()
         cls.server.image_scheduler.close() if hasattr(cls.server.image_scheduler, 'close') else None

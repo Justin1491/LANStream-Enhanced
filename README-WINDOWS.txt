@@ -18,7 +18,9 @@ Enhanced test installation
 --------------------------
 Extract to C:\LANStream-Enhanced and use port 8061. Do not replace C:\LANStream
 or its config/cache on port 8060. See docs/enhanced-guide.md and docs/status.md.
-The cache now contains durable Favorites; back it up before upgrading.
+The cache contains durable Favorites and the Library Cleanup Trash journal;
+back it up before upgrading. Also back up each library's .lanstream-trash folder.
+See docs/library-cleanup.md for opt-in file changes, saved durations and recovery.
 
 Routine updates
 ---------------
