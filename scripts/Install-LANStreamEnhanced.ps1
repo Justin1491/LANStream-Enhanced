@@ -484,13 +484,15 @@ function Get-LanStreamUpgradeProcesses {
 function Assert-LanStreamUpgradePort {
     param([Diagnostics.Process[]]$OwnedProcesses)
     $ids = @($OwnedProcesses | ForEach-Object { $_.Id })
-    $listeners = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners())
-    foreach ($port in @(8060, 8061)) {
-        if (@($listeners | Where-Object { $_.Port -eq $port }).Count) {
-            $connections = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop)
-            if (($port -eq 8060 -and @($connections | Where-Object { $ids -contains $_.OwningProcess }).Count) -or
-                ($port -eq 8061 -and @($connections | Where-Object { $ids -notcontains $_.OwningProcess }).Count)) { throw 'Port 8061 is already in use by an unrelated process, or the target owns protected port 8060. No unrelated process was stopped.' }
-        }
+    $connections = @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+    if (@($connections | Where-Object { ($_.LocalPort -eq 8060 -and $ids -contains $_.OwningProcess) -or
+            ($_.LocalPort -eq 8061 -and $ids -notcontains $_.OwningProcess) }).Count) {
+        throw 'Port 8061 is already in use by an unrelated process, or the target owns protected port 8060. No unrelated process was stopped.'
+    }
+    if (-not @($connections | Where-Object { $_.LocalPort -eq 8061 }).Count) {
+        # Missing ownership rows do not prove the port is free, even with a target process.
+        try { Assert-LanStreamNewInstallPort }
+        catch { throw 'Port 8061 is occupied by an unrelated or unverified process, or is unavailable. No unrelated process was stopped.' }
     }
 }
 

@@ -337,6 +337,37 @@ class InstallerSafety(unittest.TestCase):
     def upgrade(self, **kwargs):
         return self.installer(**kwargs).split(' -MediaRoot @(', 1)[0] + ' -Upgrade'
 
+    def test_upgrade_refuses_reserved_port_before_changing_installation(self):
+        before = self.existing_upgrade()
+        families = [(socket.AF_INET, '127.0.0.1')]
+        if socket.has_ipv6:
+            families.append((socket.AF_INET6, '::1'))
+        for family, address in families:
+            with self.subTest(address=address), socket.socket(family) as reserved:
+                if family == socket.AF_INET6:
+                    reserved.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                try:
+                    reserved.bind((address, 8061))
+                except OSError:
+                    self.skipTest('Port 8061 is occupied; its owner must be preserved')
+                result = self.run_ps('exit (' + self.upgrade() + ')')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(b'unrelated', result.stdout + result.stderr)
+                self.assert_upgrade_unchanged(before)
+                self.assertFalse(list(self.work.glob('.LANStream-Enhanced-upgrade-*')))
+
+    def test_upgrade_refuses_unreported_listener_even_with_target_process(self):
+        with socket.socket() as listener:
+            try:
+                listener.bind(('127.0.0.1', 8061))
+            except OSError:
+                self.skipTest('Port 8061 is occupied; its owner must be preserved')
+            listener.listen(1)
+            for owned in ('@()', '@([Diagnostics.Process]::GetCurrentProcess())'):
+                with self.subTest(owned=owned):
+                    self.assert_rejected('function Get-NetTCPConnection {}; Assert-LanStreamUpgradePort ' + owned,
+                                         'unrelated')
+
     def test_upgrade_requires_existing_enhanced_markers(self):
         result = self.run_ps('exit (' + self.upgrade() + ')')
         self.assertEqual(result.returncode, 1)
