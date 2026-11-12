@@ -216,7 +216,7 @@ function Invoke-LanStreamProcessCheck {
     Write-Host 'Selected processes:'
     $selected | Select-Object ProcessId, ExecutablePath, CreationDate | Format-List | Out-Host
     if (-not $WhatIfPreference) {
-        Write-Host 'Stopping interrupts playback and background work in these instances. Prefer Ctrl+C for a visible console.'
+        Write-Host 'Stopping interrupts playback and background work. Prefer Exit LANStream in the tray menu, or Ctrl+C for older console builds.'
         if ((Read-Host 'Type STOP to terminate these selected processes') -cne 'STOP') {
             Write-Host 'Cancelled; no processes stopped.'; return 0
         }

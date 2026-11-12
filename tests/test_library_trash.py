@@ -1,6 +1,7 @@
 import json
 import contextlib
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -100,6 +101,50 @@ class TrashTests(unittest.TestCase):
         purge = self.preview('purge', {'item_id': item})
         self.assertEqual(self.run_job('purge', [purge])['results'][0]['status'], 'purged')
         self.assertEqual(self.manager.listing('owner', [self.root], {})['total'], 0)
+
+    def test_close_wait_drains_active_and_queued_work_after_timed_close(self):
+        token = self.preview()
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def checkpoint(point):
+            if point == 'move_renamed':
+                entered.set()
+                if not release.wait(10):
+                    raise TimeoutError('test did not release mutation')
+
+        def close_and_wait():
+            self.manager.close(wait=True)
+            finished.set()
+
+        waiter = threading.Thread(target=close_and_wait)
+        try:
+            with patch.object(self.manager, '_checkpoint', side_effect=checkpoint):
+                active = self.manager.submit('owner', 'move', [token], str(uuid.uuid4()))
+                self.assertTrue(entered.wait(5))
+                queued = self.manager.submit('owner', 'recover',
+                                             [{'root_id': root_id(self.root), 'rel': ''}], str(uuid.uuid4()))
+                self.manager.close()
+                self.assertTrue(self.manager._thread.is_alive())
+                with self.assertRaisesRegex(ValueError, 'Trash worker is busy'):
+                    self.manager.submit('owner', 'recover', [{}], str(uuid.uuid4()))
+                waiter.start()
+                self.assertFalse(finished.wait(.1))
+                release.set()
+                self.assertTrue(finished.wait(5))
+            self.assertFalse(self.manager._thread.is_alive())
+            self.assertFalse(self.path.exists())
+            with contextlib.closing(sqlite3.connect(self.db)) as db:
+                jobs = {row[0]: json.loads(row[1]) for row in db.execute('SELECT job_id,job FROM trash_jobs')}
+            self.assertEqual(jobs[active['job_id']]['state'], 'complete')
+            self.assertEqual(jobs[queued['job_id']]['state'], 'complete')
+            item_id = jobs[active['job_id']]['results'][0]['item_id']
+            self.assertEqual((self.root / '.lanstream-trash' / item_id / 'payload').read_bytes(), b'fictional media only')
+            with self.assertRaisesRegex(ValueError, 'Trash worker is busy'):
+                self.manager.submit('owner', 'recover', [{}], str(uuid.uuid4()))
+        finally:
+            release.set()
+            if waiter.ident is not None:
+                waiter.join(5)
 
     def test_stale_preview_and_replacement_do_not_move(self):
         token = self.preview()

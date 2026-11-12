@@ -257,12 +257,14 @@ class ExplorerRoutes(unittest.TestCase):
                 with patch.object(self.server, 'probe', return_value=info), \
                         patch.object(self.server, 'selected_transcoder', return_value={
                             'key': 'software', 'label': 'Software', 'ok': True,
-                        }), patch.object(self.server.subprocess, 'Popen', return_value=proc) as popen:
+                        }), patch.object(self.server.hls_streams, 'own_process') as own_process, \
+                        patch.object(self.server.subprocess, 'Popen', return_value=proc) as popen:
                     response = self.client.get(stream_url + '?start=12.5&audio=1' + mode)
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.content_type, 'video/mp4')
                     self.assertEqual(response.data, b'fixture-mp4')
                     response.close()
+                    own_process.assert_called_once_with(proc)
                     command = popen.call_args.args[0]
                     self.assertEqual(command[command.index('-i') + 1], str(source.resolve()))
                     self.assertEqual(command[command.index('-c:v') + 1], 'libx264')

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import struct
 import subprocess
 import tempfile
 import time
@@ -17,6 +18,11 @@ import urllib.request
 class FrozenRuntimeTests(unittest.TestCase):
     def test_packaged_app_loads_runtime_and_serves_its_binary_identity(self):
         executable = Path(os.environ['LANSTREAM_RUNTIME_EXE']).resolve()
+        binary = executable.read_bytes()
+        pe_offset = struct.unpack_from('<I', binary, 0x3c)[0]
+        self.assertEqual(binary[pe_offset:pe_offset + 4], b'PE\0\0')
+        self.assertEqual(struct.unpack_from('<H', binary, pe_offset + 24 + 68)[0], 2,
+                         'Desktop executable must use the Windows GUI subsystem')
         self.assertTrue(any(path.is_file() for path in (executable.parent / '_internal').glob('python3[0-9]*.dll')),
                         'Package is missing its versioned Python runtime DLL')
         self.assertFalse((executable.parent / 'ffmpeg.exe').exists())
@@ -54,6 +60,9 @@ class FrozenRuntimeTests(unittest.TestCase):
                     self.assertFalse(payload['transcoder_ok'], 'No encoder may be available in this runtime check')
                     self.assertEqual(payload['server']['kind'], 'executable')
                     self.assertEqual(payload['server']['build'], hashlib.sha256(executable.read_bytes()).hexdigest())
+                    self.assertIn('Local:   http://127.0.0.1:',
+                                  (work / 'runtime.log').read_text(encoding='utf-8', errors='replace'),
+                                  'Windowless startup must retain installer-redirected diagnostics')
                 finally:
                     if process.poll() is None:
                         process.terminate()

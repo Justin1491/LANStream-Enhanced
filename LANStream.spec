@@ -5,14 +5,17 @@ from pathlib import Path
 project = Path(SPECPATH)
 
 a = Analysis(
-    ["launcher.py"],
+    ["desktop_launcher.py"],
     pathex=[str(project)],
     binaries=[],
     datas=[
         (str(project / "templates"), "templates"),
         (str(project / "static"), "static"),
+        (str(project / "docs" / "pystray-COPYING.LGPL"), "docs"),
+        (str(project / "docs" / "pystray-COPYING"), "docs"),
+        (str(project / "docs" / "six-LICENSE"), "docs"),
     ],
-    hiddenimports=[],
+    hiddenimports=["pystray._win32"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -32,7 +35,8 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
+    icon=str(project / "static" / "lanstream.ico"),
 )
 
 coll = COLLECT(

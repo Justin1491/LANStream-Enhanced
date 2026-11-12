@@ -11,6 +11,28 @@ from hls_streams import HLSStream, HLSStreams
 
 
 class HLSStreamsTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows Job Object ownership')
+    def test_direct_encoder_ownership_stops_child_on_close_and_rejects_late_start(self):
+        processes = []
+        try:
+            process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                       creationflags=subprocess.CREATE_NO_WINDOW)
+            processes.append(process)
+            self.manager.own_process(process)
+            self.manager.close()
+            self.assertIsNotNone(process.wait(timeout=5))
+            late = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
+            processes.append(late)
+            with self.assertRaises(RuntimeError):
+                self.manager.own_process(late)
+            self.assertIsNotNone(late.poll())
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1])
         self.root = Path(self.temp.name)

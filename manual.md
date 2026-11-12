@@ -180,18 +180,19 @@ Double-click:
 LANStream.exe
 ```
 
-A console window opens.
+LANStream starts as an icon in the system tray beside the clock. Windows may
+place it under hidden icons. Click the icon to open the status window.
 
-The console displays information including:
+The status window displays information including:
 
 - LANStream version
 - local URL
 - LAN URL
 - selected transcoder
 
-Keep this window open while using LANStream.
-
-Closing it stops the server.
+Minimize or close the window to hide it while LANStream keeps running.
+To stop the server, right-click its tray icon and choose **Exit LANStream**.
+Exit waits for active requests, thumbnails and library cleanup to finish.
 
 ## Step 4: Windows Firewall
 
@@ -207,7 +208,7 @@ Public-network access is generally unnecessary.
 
 ## Step 5: Connect from another device
 
-From another computer or device on the same network, open the LAN URL shown in the LANStream console.
+From another computer or device on the same network, open the LAN URL shown in the LANStream status window.
 
 For example:
 
@@ -1459,7 +1460,7 @@ when mapped-drive visibility is unreliable.
 Check:
 
 1. `LANStream.exe` is still running.
-2. The console shows the expected port.
+2. The status window shows the expected port.
 3. You are using the correct server IP address.
 4. Windows Firewall allows LANStream on Private networks.
 5. The client is on the same reachable network.

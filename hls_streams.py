@@ -227,6 +227,20 @@ class HLSStreams:
         self._reaper = None
         self._job = None
 
+    def own_process(self, process):
+        """Share Windows encoder lifetime ownership with direct MP4 streams."""
+        with self._lock:
+            try:
+                if self._closed.is_set():
+                    raise RuntimeError("Media streams are closed")
+                if os.name == "nt":
+                    if self._job is None:
+                        self._job = _WindowsJob()
+                    self._job.assign(process)
+            except BaseException:
+                _stop_process(process)
+                raise
+
     @staticmethod
     def _validate_id(stream_id):
         if not _STREAM_ID.fullmatch(stream_id):
@@ -307,7 +321,8 @@ class HLSStreams:
             try:
                 stderr = (directory / "stderr.log").open("wb")
                 process = subprocess.Popen(command_factory(directory), stdin=subprocess.DEVNULL,
-                                           stdout=subprocess.DEVNULL, stderr=stderr, cwd=directory)
+                                           stdout=subprocess.DEVNULL, stderr=stderr, cwd=directory,
+                                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
                 if self._job is not None:
                     self._job.assign(process)
                 tracker_id = self.tracker.start(backend, source, start_offset=start, detail="HLS")

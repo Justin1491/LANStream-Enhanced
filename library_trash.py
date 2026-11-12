@@ -218,12 +218,14 @@ class TrashManager:
         profile_id = str(profile_id)
         request = json.dumps({'action': action, 'items': items}, sort_keys=True, allow_nan=False)
         with self._lock:
+            if self._closed:
+                raise ValueError('Trash worker is busy')
             previous = self._db.execute('SELECT profile,request,job FROM trash_jobs WHERE operation_id=?', (operation_id,)).fetchone()
             if previous:
                 if previous['profile'] != profile_id or previous['request'] != request:
                     raise ValueError('Operation identifier already used')
                 return self._job_public(profile_id, json.loads(previous['job']))
-            if self._closed or self._queue.full():
+            if self._queue.full():
                 raise ValueError('Trash worker is busy')
             job = dict(job_id=str(uuid.uuid4()), operation_id=operation_id, action=action, state='queued', results=[], total=len(items), completed=0)
             with self._db:
@@ -715,8 +717,9 @@ class TrashManager:
             time.sleep(.01)
         return True
 
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        self._thread.join(2)
+    def close(self, *, wait=False):
+        with self._lock:
+            if self._closed and not wait:
+                return
+            self._closed = True
+        self._thread.join(None if wait else 2)

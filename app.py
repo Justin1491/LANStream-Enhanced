@@ -586,7 +586,9 @@ def probe(path: Path) -> dict[str, Any]:
             raise RuntimeError('This file has a pending cleanup operation.')
         ACTIVE_PROBES[key] = ACTIVE_PROBES.get(key, 0) + 1
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                              stdin=subprocess.DEVNULL,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         if proc.returncode:
             raise RuntimeError(proc.stderr.strip() or "ffprobe failed")
         return json.loads(proc.stdout)
@@ -692,6 +694,8 @@ def _seven_zip_names(source: Path) -> list[str]:
         text=True,
         errors="replace",
         timeout=30,
+        stdin=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
@@ -723,6 +727,8 @@ def _seven_zip_read(source: Path, member: str) -> bytes:
         [SEVEN_ZIP, "x", "-so", "-y", str(source), member],
         capture_output=True,
         timeout=60,
+        stdin=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", errors="replace").strip()
@@ -824,7 +830,9 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
                 "-vf", f"blackframe=amount=0:threshold=32,scale={width}:-2:force_original_aspect_ratio=decrease",
                 "-q:v", "3", "-y", str(tmp),
             ]
-            proc = subprocess.run(cmd, capture_output=True, timeout=90)
+            proc = subprocess.run(cmd, capture_output=True, timeout=90,
+                                  stdin=subprocess.DEVNULL,
+                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             match = re.search(rb"pblack:(\d+)", proc.stderr or b"")
             if match and int(match.group(1)) >= 85:
                 tmp.unlink(missing_ok=True)
@@ -846,7 +854,9 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
             "-vf", f"scale={width}:-2:force_original_aspect_ratio=decrease",
             "-q:v", "3", "-y", str(tmp),
         ]
-        proc = subprocess.run(cmd, capture_output=True, timeout=90)
+        proc = subprocess.run(cmd, capture_output=True, timeout=90,
+                              stdin=subprocess.DEVNULL,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         if (
             proc.returncode == 0
             and tmp.exists()
@@ -927,7 +937,9 @@ def run_encoder_test(encoder: str, extra_before_input=None, video_filter=None) -
         cmd += ["-vf", video_filter]
     cmd += ["-c:v", encoder, "-f", "null", "-"]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20,
+                              stdin=subprocess.DEVNULL,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         return proc.returncode == 0, (proc.stderr or "").strip()
     except Exception as exc:
         return False, str(exc)
@@ -2023,14 +2035,25 @@ def transcode(root_index, relpath, hls=False):
 
     cmd = transcode_command(transcoder["key"], source, audio_index, start, low=request.args.get("low") == "1")
     app.logger.info("Starting %s transcode: %s", transcoder["label"], " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-
-    stream_id = stream_tracker.start(
-        transcoder["key"],
-        source,
-        start_offset=start,
-        detail=transcoder["label"],
-    )
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+                            stdin=subprocess.DEVNULL,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    try:
+        hls_streams.own_process(proc)
+        stream_id = stream_tracker.start(
+            transcoder["key"],
+            source,
+            start_offset=start,
+            detail=transcoder["label"],
+        )
+    except BaseException:
+        from hls_streams import _stop_process
+        _stop_process(proc)
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+        raise
 
     def generate():
         cancelled = False
@@ -2139,7 +2162,8 @@ def subtitle(root_index, relpath):
         FFMPEG, "-hide_banner", "-loglevel", "error",
         "-ss", f"{max(0.0, start):.3f}",
         "-i", str(source), "-map", f"0:{idx}", "-f", "webvtt", "pipe:1"
-    ], capture_output=True, timeout=30)
+    ], capture_output=True, timeout=30, stdin=subprocess.DEVNULL,
+       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     if proc.returncode:
         abort(415)
     return Response(proc.stdout, mimetype="text/vtt")

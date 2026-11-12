@@ -9,6 +9,25 @@ third-party software. Those components are not covered by The Unlicense.
 
 ---
 
+## Windows tray and status window
+
+The Windows desktop entry point uses **pystray 0.19.5**, copyright Moses Palmér,
+under the GNU Lesser General Public License version 3 or later. It is used
+without modifications. Source and license: https://github.com/moses-palmer/pystray/tree/v0.19.5
+The bundled licenses are included under _internal/docs/ as
+pystray-COPYING.LGPL and pystray-COPYING.
+
+Its **six** dependency is distributed under the MIT License:
+https://github.com/benjaminp/six/blob/main/LICENSE
+The bundled license is included as _internal/docs/six-LICENSE.
+
+The status window uses Python's **Tkinter** and bundled **Tcl/Tk** runtime.
+Their license files accompany the PyInstaller runtime. The icon and window
+image use the existing **Pillow** dependency, licensed under HPND:
+https://github.com/python-pillow/Pillow/blob/main/LICENSE
+
+---
+
 ## FFmpeg and FFprobe
 
 The Windows binary distribution includes:

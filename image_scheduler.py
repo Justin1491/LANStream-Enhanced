@@ -250,11 +250,14 @@ class ImageScheduler:
                 self._condition.wait(remaining)
             return True
 
-    def close(self):
+    def close(self, *, wait=False):
         with self._condition:
             self._closed = True
             self._preparation_stop.set()
             self._pending.clear()
             self._condition.notify_all()
         if self._preparation_thread:
-            self._preparation_thread.join(timeout=1)
+            self._preparation_thread.join(timeout=None if wait else 1)
+        if wait:
+            for thread in self._threads:
+                thread.join()

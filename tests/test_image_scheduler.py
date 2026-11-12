@@ -62,6 +62,60 @@ class ImageSchedulerTests(unittest.TestCase):
             release.set()
             self.assertTrue(scheduler.wait_for_idle(2))
 
+    def test_close_wait_joins_preparation_and_all_active_workers_after_default_close(self):
+        active, preparing = threading.Event(), threading.Event()
+        release_workers, release_preparation = threading.Event(), threading.Event()
+        finished = threading.Event()
+        started = []
+
+        def generate(source, output, *args):
+            started.append(source)
+            if len(started) == 2:
+                active.set()
+            release_workers.wait(10)
+            output.write_text('image')
+
+        def jobs(stop):
+            preparing.set()
+            release_preparation.wait(10)
+            return iter(())
+
+        scheduler = self.scheduler(generate)
+
+        def close_and_wait():
+            scheduler.close(wait=True)
+            finished.set()
+
+        waiter = threading.Thread(target=close_and_wait)
+        try:
+            self.assertTrue(self.submit(scheduler, 'one'))
+            self.assertTrue(self.submit(scheduler, 'two'))
+            self.assertTrue(active.wait(2))
+            self.assertTrue(self.submit(scheduler, 'queued'))
+            self.assertTrue(scheduler.start_preparation('folder', jobs))
+            self.assertTrue(preparing.wait(2))
+            scheduler.close()
+            self.assertEqual(scheduler.status()['pending'], 0)
+            self.assertEqual(scheduler.status()['active'], 2)
+            self.assertFalse(self.submit(scheduler, 'after-close'))
+            self.assertFalse(scheduler.start_preparation('after-close', jobs))
+            waiter.start()
+            self.assertFalse(finished.wait(.1))
+            release_preparation.set()
+            scheduler._preparation_thread.join(2)
+            self.assertFalse(scheduler._preparation_thread.is_alive())
+            self.assertFalse(finished.wait(.1))
+            release_workers.set()
+            self.assertTrue(finished.wait(2))
+            self.assertTrue(all(not thread.is_alive() for thread in scheduler._threads))
+            self.assertFalse((self.root / 'queued.jpg').exists())
+        finally:
+            release_preparation.set()
+            release_workers.set()
+            if waiter.ident is not None:
+                waiter.join(2)
+            scheduler.wait_for_idle(2)
+
     def test_preparation_exceeds_queue_bound_and_reuses_cache(self):
         generated = []
         def generate(source, output, *args):

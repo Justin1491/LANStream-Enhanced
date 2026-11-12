@@ -45,8 +45,9 @@ for your selection, including the current build.
 
 Enter a comma/space separated list of unwanted PIDs, or **ALL** to select every
 eligible instance in the displayed inventory. Review the selected paths and
-type **STOP** to terminate them. Enter cancels at either prompt. Use Ctrl+C
-instead when a visible server console is available for an orderly shutdown.
+type **STOP** to terminate them. Enter cancels at either prompt. Prefer
+**Exit LANStream** in the tray menu for an orderly shutdown. For older console
+builds or direct Python launches, use Ctrl+C in the visible server console.
 Termination interrupts that instance's playback and background work.
 
 Protection rules:

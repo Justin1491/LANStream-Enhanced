@@ -56,10 +56,24 @@ Starting LANStream
 ------------------
 Double-click LANStream.exe.
 
-A console window remains open and displays:
+LANStream starts as an icon in the system tray beside the clock. Windows may
+place it in the tray's hidden-icons menu. Click the icon (or right-click and
+choose Show status) to open a scrollable status window displaying:
 - localhost URL
 - LAN URL
 - selected transcoder
+- build, instance, process ID and live application output
+
+Minimize or close the status window to hide it; LANStream keeps serving media.
+To stop the server, right-click its tray icon and choose Exit LANStream.
+Exit shows a stopping state until active requests, thumbnails and library
+cleanup operations finish. A slow or unavailable share can delay shutdown.
+The status window retains the most recent 1 MiB of output. Startup errors open
+the window automatically. If the tray is unavailable, the window remains
+accessible and closing it stops LANStream.
+
+This does not configure LANStream to start automatically with Windows.
+For a Python console launch, run python launcher.py as before.
 
 Windows may ask whether LANStream may communicate through Windows Firewall.
 For normal home use, allow it on Private networks.

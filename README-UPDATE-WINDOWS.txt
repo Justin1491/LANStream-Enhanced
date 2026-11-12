@@ -13,8 +13,10 @@ This package contains the updated application and its complete Python runtime.
 It uses your existing FFmpeg/FFprobe and 7-Zip tools. It is not a first-install
 bundle and does not contain config.txt, cache, passwords or media.
 
-1. Close the diagnostic LANStream window on port 8062 and the installed Enhanced
-   window on port 8061. Leave the original C:\LANStream application on 8060 alone.
+1. Stop diagnostic LANStream on port 8062 and installed Enhanced on port 8061.
+   For tray builds, right-click each tray icon and choose Exit LANStream;
+   closing the status window only hides it. For older console builds, close
+   the console or use Ctrl+C. Leave C:\LANStream on port 8060 alone.
    If an instance is hard to locate, the included Check-LANStreamProcesses.ps1
    can identify its path; see README-PROCESS-CHECK.md.
 2. Back up the complete C:\LANStream-Enhanced folder to a dated sibling folder,
@@ -31,14 +33,16 @@ bundle and does not contain config.txt, cache, passwords or media.
 5. Keep the installed config.txt, cache folder, ffmpeg.exe, ffprobe.exe and
    existing 7-Zip files in place. Do not copy an old diagnostic launcher into
    the installation. Start C:\LANStream-Enhanced\LANStream.exe normally.
-6. Open the installed Enhanced app on port 8061 and sign in again if requested.
+6. LANStream starts in the system tray beside the clock, possibly under hidden
+   icons. Click its icon to show status; Minimize or X hides it again.
+   Open the installed Enhanced app on port 8061 and sign in again if requested.
    Check Normal and Low Bandwidth playback, sound and your Favorites.
 
 If your Enhanced installation is in a different folder, substitute that folder
 above. The port comes from your existing configuration; this release does not
 force the diagnostic port or a particular transcoder preference.
 
-Rollback: close the new Enhanced window, retain its folder for diagnosis, and
+Rollback: use Exit LANStream in the new Enhanced tray menu, retain its folder for diagnosis, and
 restore the complete dated backup to the original installation path. Launch
 LANStream.exe from that restored folder. Do not delete the backup before the
 new build has been checked. Never overwrite the separate original C:\LANStream

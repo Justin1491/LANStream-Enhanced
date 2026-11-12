@@ -104,6 +104,8 @@ For the setup bundle, extract all files, edit the generic `config.txt` with your
 
 For a complete portable app, extract it into a separate writable folder, edit its `config.txt`, and run `LANStream.exe`. Keep FFmpeg, FFprobe, the runtime files, and the supplied comic-viewer tools alongside the app as packaged.
 
+The Windows app starts in the system tray beside the clock (possibly under hidden icons). Click its icon to show URLs, transcoder, build identity and live output in the status window. Minimize or close hides the window while the server keeps running; right-click the icon and choose **Exit LANStream** to stop. Startup errors open the status window automatically. Direct Python console launches and Docker behavior are unchanged.
+
 Keep an existing original LANStream installation separate. The Enhanced installer protects `C:\LANStream` and port 8060. Neither installer creates a service, scheduled task, or firewall rule; allow Private-network access if Windows prompts.
 
 ## Configuration and access
