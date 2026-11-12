@@ -4,19 +4,25 @@ Open **Library Cleanup** in the top navigation, or **Open in Library Cleanup** i
 
 ## Find and compare files
 
-Choose all accessible libraries or one library, then choose library/folder/subfolder scope. **Choose indexed folder** navigates the folders already in the database. Filename contains searches any part of a filename with the existing Unicode case-insensitive matching. The file categories are LANStream's supported videos, pictures, and documents; arbitrary filesystem files are not added to the index.
+Use **Change folder** to choose a library or an indexed folder. **Include subfolders** starts enabled; uncheck it to compare only files directly in that folder. Breadcrumbs and file locations navigate within Cleanup. Opening Cleanup from ordinary browsing includes that folder's subfolders. With several libraries, choose a location first; **All accessible libraries** remains available in the picker.
 
-Click a column heading to sort the complete filtered result set, then use the 100-item pages. **Show matching sizes** shows only groups with identical byte counts; the group count includes all matching paths across pages. Exact bytes appear under the readable size. Equal sizes, lengths, or thumbnails suggest candidates for review; they do not prove identical contents, and LANStream never selects duplicates automatically.
+**Possible duplicates** shows a group list beside the file comparison table (stacked on narrow screens). **Same size** groups identical byte counts; **Same duration** groups videos with the same displayed hours, minutes and seconds, ignoring fractional seconds. Switch between these separate clues. They do not prove identical contents: LANStream does not hash files or automatically select copies. Missing durations are counted separately and excluded from duration groups until prepared.
+
+Search any part of a filename with Unicode case-insensitive matching. In Possible duplicates, a matching filename finds its entire group, including renamed copies in the chosen folder tree. Scope, access restrictions, and file-type filters still apply to every member. The file categories are supported videos, pictures, and documents; arbitrary filesystem files are not indexed.
+
+Groups are ordered by largest size or longest duration, with 20 groups per page. Choose a group to compare its files by location, in 100-file pages; group counts cover all members. **All files** retains sorting by filename, location, size, duration, modified date, and type across the complete result set before pagination. Exact byte counts appear under readable sizes. Results can be incomplete while indexing is pending or stale when storage is unavailable; changing the view never starts a share scan.
 
 Thumbnails start off and are independent of normal browsing. Enabling them loads cached images for visible rows, with two requests at most. It does not generate missing images. **Prepare thumbnails in this folder** is explicit and covers the selected folder without subfolders. Refresh results afterward to see newly cached images.
 
-Select individual files or **Select this page**. Selection is limited to the current page and clears when you change the results, filters, sorting, scope, or tab. The confirmation identifies the actual files and original locations. Partial failures remain in the results with explanations.
+Select individual files or **Select this page**. Selection is limited to the current comparison page and clears when you change groups, results, filters, sorting, location, or tab. The confirmation identifies actual files and original locations. Groups are recomputed after changes; a group disappears when fewer than two files remain. Partial failures remain visible with explanations. Trash has its own filename search so a group search does not hide a differently named copy after moving it.
 
 ## Prepare durations
 
-**Prepare durations** reads videos in the chosen library/folder scope, irrespective of the filename or matching-size filters. Results are saved across restarts. Unknown durations display an em dash and sort last in both directions. Sorting or opening the Cleanup page never starts FFprobe. Opening a video normally also saves valid duration metadata from its existing probe.
+**Prepare durations** reads videos in the chosen folder scope, including subfolders when selected, irrespective of filename, file-type, or group filters. Results are saved across restarts. Unknown durations display an em dash and sort last in both directions in All files. Duration grouping excludes unavailable values. Sorting, grouping, searching, or opening Cleanup never starts FFprobe. Opening a video normally also saves valid duration metadata from its existing probe.
 
 One preparation worker runs at a time and pauses before the next file while LANStream reports active playback. Pause/stop take effect between files; the current FFprobe call can take up to 30 seconds. Failed files are not retried automatically; use **Retry failed durations**. A restart stops the preparation job but keeps saved results. Changed files need new metadata after indexing discovers their change. File size/timestamps are version clues, not a content hash.
+
+This update preserves folder-name casing when refreshing restored files on Windows, so their saved durations stay available. If a duration disappeared after restoring with an older version, prepare durations again for that folder; existing affected cache entries are not automatically rewritten.
 
 ## Enable file changes
 

@@ -131,6 +131,113 @@ class CleanupIndexTests(unittest.TestCase):
             self.assertEqual(self.index.cleanup([self.root], excluded={root_id(self.root): ('secret',)})['total'], 2)
             self.assertEqual(len(list(self.index.duration_candidates([self.root], scope_relative='nested', recursive=False))), 1)
 
+    def test_cleanup_groups_scope_visibility_and_whole_group_query(self):
+        for name in ('nested/Straße.mp4', 'nested/other.mp4', 'nested/child/deep.mp4',
+                     'sibling/outside.mp4', 'nested/blocked/secret.mp4', 'nested/hidden.mp4'):
+            self.file(name, 7)
+        self.scan()
+        for folder in ('nested', 'nested/child', 'sibling', 'nested/blocked'):
+            self.scan(relative=folder)
+        self.index.hide_file(self.root, 'nested/hidden.mp4')
+        self.assertTrue(self.index.wait_for_idle())
+        options = dict(scope_root=root_id(self.root), scope_relative='nested',
+                       excluded={root_id(self.root): ('nested/blocked',)})
+        before = self.index.metrics()['scans_started']
+        with patch('directory_index.os.scandir', side_effect=AssertionError('group read scanned')):
+            result = self.index.cleanup_groups([self.root], query='STRASSE', **options)
+            self.assertEqual(result['items'], [dict(group_key='7', value=7, count=3, total_size=21)])
+            direct = self.index.cleanup_groups([self.root], recursive=False, **options)
+            self.assertEqual(direct['items'][0]['count'], 2)
+            members = self.index.cleanup([self.root], query='STRASSE', group_by='size', group_key='7',
+                                         sort='size', descending=True, **options)
+            self.assertEqual([row['rel'] for row in members['items']],
+                             ['nested/other.mp4', 'nested/Straße.mp4', 'nested/child/deep.mp4'])
+            self.assertEqual(self.index.cleanup([self.root], query='absent', group_by='size', group_key='7', **options)['total'], 0)
+        self.assertEqual(self.index.metrics()['scans_started'], before)
+
+    def test_duration_groups_floor_seconds_and_report_missing_before_query(self):
+        durations = {'a.mp4': 12.01, 'b.mp4': 12.99, 'c.mp4': 13.0,
+                     'zero.mp4': 0, 'fraction.mp4': .99, 'stale.mp4': 12.5}
+        for name in (*durations, 'missing.mp4', 'failed.mp4', 'picture.jpg'):
+            self.file(name, 2)
+        self.scan()
+        for name, duration in durations.items():
+            self.index.save_duration(self.root, name, self.fingerprint(self.root / name), duration)
+        self.index.save_duration(self.root, 'failed.mp4', self.fingerprint(self.root / 'failed.mp4'), None)
+        self.file('stale.mp4', 3)
+        self.scan()
+        result = self.index.cleanup_groups([self.root], group_by='duration')
+        self.assertEqual(result['items'], [dict(group_key='12', value=12, count=2, total_size=4),
+                                           dict(group_key='0', value=0, count=2, total_size=4)])
+        self.assertEqual(result['missing_durations'], 3)
+        matched = self.index.cleanup_groups([self.root], group_by='duration', query='a.mp4')
+        self.assertEqual(matched['total'], 1)
+        self.assertEqual(matched['missing_durations'], 3)
+        self.assertEqual(self.index.cleanup_groups([self.root], group_by='duration', file_type='pictures')['missing_durations'], 0)
+        members = self.index.cleanup([self.root], group_by='duration', group_key='12', query='a.mp4')
+        self.assertEqual([row['name'] for row in members['items']], ['a.mp4', 'b.mp4'])
+        self.assertEqual(self.index.cleanup([self.root], group_by='duration', group_key='13')['total'], 0)
+        self.assertEqual(self.index.cleanup_groups([self.root], scope_relative='unindexed')['missing_durations'], 0)
+        self.assertEqual(self.index.cleanup_groups([self.root], excluded={root_id(self.root): ('missing.mp4',)})['missing_durations'], 2)
+
+    def test_cleanup_group_and_member_paging_and_overlap_deduplication(self):
+        for number in range(23):
+            for copy in range(2):
+                self.file(f'nested/group{number}-{copy}.mp4', number + 1)
+        for number in range(105):
+            self.file(f'nested/large{number}.mp4', 50)
+        self.scan(relative='nested')
+        self.scan(self.root / 'nested')
+        roots = [self.root, self.root / 'nested']
+        first = self.index.cleanup_groups(roots)
+        self.assertEqual((first['total'], first['page_size'], len(first['items'])), (24, 20, 20))
+        self.assertEqual(first['items'][0], dict(group_key='50', value=50, count=105, total_size=5250))
+        last = self.index.cleanup_groups(roots, page=99, page_size=100)
+        self.assertEqual((last['page'], last['page_size'], len(last['items'])), (2, 20, 4))
+        members = self.index.cleanup(roots, group_by='size', group_key='50', page_size=500, page=2)
+        self.assertEqual((members['total'], members['page_size'], len(members['items'])), (105, 100, 5))
+
+    def test_cleanup_group_validation(self):
+        for mode, key in (('other', '1'), ('size', '-1'), ('size', '1.0'), ('size', '１２'),
+                          ('size', ''), ('size', '9223372036854775808'), ('size', None), (None, '1')):
+            with self.subTest(mode=mode, key=key), self.assertRaises(ValueError):
+                self.index.cleanup([self.root], group_by=mode, group_key=key)
+        with self.assertRaises(ValueError):
+            self.index.cleanup_groups([self.root], group_by='other')
+
+    @unittest.skipIf(directory_index.sqlite3.sqlite_version_info < (3, 35, 0), 'SQLite materialization hints unavailable')
+    def test_group_pages_evaluate_authorized_physical_paths_once(self):
+        for number in range(5):
+            self.file(f'clip{number}.mp4', 2 if number < 3 else 3)
+        self.scan()
+        for read in (lambda: self.index.cleanup_groups([self.root], page=99),
+                     lambda: self.index.cleanup([self.root], group_by='size', group_key='2', page=99)):
+            with patch('directory_index._path_key', wraps=directory_index._path_key) as physical:
+                result = read()
+            self.assertEqual(physical.call_count, 5)
+            self.assertEqual(result['page'], 1)
+        for read in (lambda: self.index.cleanup_groups([self.root], query='absent', page=99),
+                     lambda: self.index.cleanup([self.root], group_by='size', group_key='0', page=99)):
+            result = read()
+            self.assertEqual((result['total'], result['page'], result['pages'], result['items']), (0, 1, 0, []))
+
+    def test_group_pages_support_sqlite_without_materialization_hints(self):
+        self.file('a.mp4', 2)
+        self.file('b.mp4', 2)
+        self.scan()
+        statements = []
+        configure = self.index._configure_queries
+        def traced(db):
+            configure(db)
+            db.set_trace_callback(statements.append)
+        with patch('directory_index.sqlite3.sqlite_version_info', (3, 34, 0)), \
+                patch.object(self.index, '_configure_queries', side_effect=traced):
+            groups = self.index.cleanup_groups([self.root])
+            members = self.index.cleanup([self.root], group_by='size', group_key='2')
+        self.assertEqual(groups['items'], [dict(group_key='2', value=2, count=2, total_size=4)])
+        self.assertEqual(members['total'], 2)
+        self.assertFalse(any(' AS MATERIALIZED ' in statement for statement in statements))
+
     def test_cleanup_read_does_not_wait_on_shared_index_lock(self):
         self.file('clip.mp4')
         self.scan()
@@ -138,6 +245,7 @@ class CleanupIndexTests(unittest.TestCase):
         def read():
             try:
                 result.append(self.index.cleanup([self.root])['total'])
+                result.append(self.index.cleanup_groups([self.root])['total'])
             finally:
                 done.set()
         with self.index._lock:
@@ -146,7 +254,7 @@ class CleanupIndexTests(unittest.TestCase):
             completed = done.wait(2)
         worker.join(3)
         self.assertTrue(completed)
-        self.assertEqual(result, [1])
+        self.assertEqual(result, [1, 0])
 
     def test_folder_picker_is_indexed_only_and_filters_before_paging(self):
         self.file('alpha/clip.mp4')
@@ -188,6 +296,7 @@ class CleanupIndexTests(unittest.TestCase):
         self.assertEqual(search['coverage'][0]['items'], 1)
         self.assertEqual(search['coverage'][0]['folders'], 1)
         self.assertEqual(self.index.cleanup([self.root])['total'], 1)
+        self.assertEqual(self.index.cleanup_groups([self.root])['total'], 0)
         self.assertEqual(self.index.favorites('p', [self.root])['total'], 0)
         self.assertEqual(self.index.favorite_flags('p', [{'root_id': rid, 'rel': '.LaNsTrEaM-TrAsH/item/payload.mp4'}]), [False])
         self.assertEqual(list(self.index.thumbnail_sources(self.root, '.LaNsTrEaM-TrAsH/item')), [])
@@ -223,6 +332,35 @@ class CleanupIndexTests(unittest.TestCase):
             self.assertEqual(self.index.cleanup([self.root])['total'], 0)
         self.assertTrue(self.index.wait_for_idle())
         self.assertEqual(self.index.cleanup([self.root])['total'], 1)
+
+    def test_restore_preserves_mixed_case_parent_and_saved_duration(self):
+        relative = 'Alps/Backup/Holiday edit.mp4'
+        path = self.file(relative, 5)
+        other = self.file('Alps/Other.mp4', 6)
+        self.scan()
+        self.scan(relative='Alps')
+        self.scan(relative='Alps/Backup')
+        alias = self.root / 'Alps'
+        self.scan(alias, 'Backup')
+        self.index.save_duration(self.root, relative, self.fingerprint(path), 1254.26)
+        self.index.save_duration(self.root, 'Alps/Other.mp4', self.fingerprint(other), 1254.99)
+        before = self.index.cleanup_groups([self.root], group_by='duration')
+        expected = self.fingerprint(path)
+        self.index.hide_file(self.root, relative, fingerprint=expected, pending=True)
+        payload = Path(self.tmp.name) / 'payload.mp4'
+        path.rename(payload)
+        self.index.hide_file(self.root, relative, fingerprint=expected)
+        payload.rename(path)
+        with self.index._condition:
+            self.index.hide_file(self.root, relative, False, fingerprint=expected)
+            self.index.save_duration(self.root, relative, expected, 1254.26, require_entry=False)
+        self.assertTrue(self.index.wait_for_idle())
+        after = self.index.cleanup_groups([self.root], group_by='duration')
+        self.assertEqual(after['items'], before['items'])
+        self.assertEqual(after['missing_durations'], 0)
+        self.assertEqual(after['coverage'][0]['folders'], before['coverage'][0]['folders'])
+        self.assertEqual(self.index.cleanup([self.root], query='Holiday')['items'][0]['rel'], relative)
+        self.assertEqual(self.index.cleanup([alias])['items'][0]['rel'], 'Backup/Holiday edit.mp4')
 
     def test_scan_held_across_hide_and_unhide_cannot_publish_old_entry(self):
         self.file('clip.mp4')

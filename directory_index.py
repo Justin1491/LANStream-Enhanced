@@ -476,7 +476,7 @@ class DirectoryIndex:
             clauses.append("e.directory=''")
         return clauses, values
 
-    def _cleanup_source(self, roots, excluded, scope_root, scope_relative, recursive, query='', file_type='all'):
+    def _cleanup_source(self, roots, excluded, scope_root, scope_relative, recursive, query='', file_type='all', *, materialized=False):
         relative = _relative(scope_relative)
         scope_id = scope_root if isinstance(scope_root, str) and scope_root.startswith('root_') else root_id(scope_root) if scope_root is not None else None
         clauses, params = [], []
@@ -488,7 +488,8 @@ class DirectoryIndex:
             clauses.append('(' + ' AND '.join(part) + ')')
             params.extend(values)
             selected.append(root_id(root))
-        sql = ("WITH authorized AS (SELECT e.*" + self._metadata_columns()
+        hint = ' MATERIALIZED' if materialized and sqlite3.sqlite_version_info >= (3, 35, 0) else ''
+        sql = (f"WITH authorized AS{hint} (SELECT e.*" + self._metadata_columns()
                + ',path_key(r.path,e.rel) AS physical FROM entries e '
                'JOIN folders f ON e.root=f.root AND e.directory=f.directory AND e.version=f.version '
                'JOIN index_roots r ON r.root=e.root ' + self._metadata_join()
@@ -503,10 +504,62 @@ class DirectoryIndex:
                 'FROM authorized), files AS (SELECT * FROM ranked WHERE alias_rank=1) ')
         return sql, params, selected
 
-    def cleanup(self, roots, *, query='', excluded=None, scope_root=None, scope_relative='', recursive=True,
-                page=1, page_size=100, sort='name', descending=False, file_type='all', matching_sizes=False):
+    @staticmethod
+    def _cleanup_group_value(group_by):
+        if group_by == 'size':
+            return 'size', '1'
+        if group_by == 'duration':
+            return 'CAST(duration AS INTEGER)', "kind='video' AND metadata_status='ready' AND duration>=0"
+        raise ValueError('Invalid cleanup grouping')
+
+    @staticmethod
+    def _cleanup_group_page(db, sql, params, source, order, page, page_size, *, missing=False):
+        missing_count = ("(SELECT count(*) FROM files WHERE kind='video' AND "
+                         "(duration IS NULL OR duration<0 OR metadata_status<>'ready'))" if missing else '0')
+        hint = ' MATERIALIZED' if sqlite3.sqlite_version_info >= (3, 35, 0) else ''
+        sql += (f', selected AS{hint} (SELECT * FROM {source}), '
+                f'summary AS (SELECT count(*) AS total,{missing_count} AS missing_durations FROM selected), '
+                'paging AS (SELECT *,min(?,max(1,(total+?-1)/?)) AS page FROM summary), '
+                f'page_rows AS (SELECT *,1 AS present FROM selected ORDER BY {order} '
+                'LIMIT ? OFFSET (SELECT (page-1)*? FROM paging)) '
+                f'SELECT * FROM paging LEFT JOIN page_rows ON 1 ORDER BY {order}')
+        rows = db.execute(sql, [*params, page, page_size, page_size, page_size, page_size]).fetchall()
+        return [row for row in rows if row['present']], rows[0]['total'], rows[0]['page'], rows[0]['missing_durations']
+
+    def cleanup_groups(self, roots, *, query='', excluded=None, scope_root=None, scope_relative='', recursive=True,
+                       page=1, page_size=20, file_type='all', group_by='size'):
+        value, eligible = self._cleanup_group_value(group_by)
         roots = self._register_roots(roots)
-        sql, params, selected = self._cleanup_source(roots, excluded, scope_root, scope_relative, recursive, query, file_type)
+        sql, params, selected = self._cleanup_source(roots, excluded, scope_root, scope_relative, recursive,
+                                                     file_type=file_type, materialized=True)
+        grouped = (sql + f', grouped AS (SELECT {value} AS value,count(*) AS count,sum(size) AS total_size '
+                   f'FROM files WHERE {eligible} GROUP BY {value} '
+                   'HAVING count(*)>1 AND max(instr(folded,?)>0)) ')
+        page, page_size = max(1, int(page)), min(20, max(1, int(page_size)))
+        with self._reader() as db:
+            rows, total, page, missing = self._cleanup_group_page(db, grouped, [*params, query.casefold()],
+                                                                 'grouped', 'value DESC', page, page_size, missing=True)
+            status = self._cleanup_status(db, roots, selected, excluded)
+        return dict(items=[dict(group_key=str(row['value']), **{key: row[key] for key in ('value', 'count', 'total_size')})
+                           for row in rows], total=total,
+                    page=page, page_size=page_size, pages=(total + page_size - 1) // page_size,
+                    missing_durations=missing, **status)
+
+    def cleanup(self, roots, *, query='', excluded=None, scope_root=None, scope_relative='', recursive=True,
+                page=1, page_size=100, sort='name', descending=False, file_type='all', matching_sizes=False,
+                group_by=None, group_key=None):
+        grouped = group_by is not None or group_key is not None
+        if grouped:
+            value, eligible = self._cleanup_group_value(group_by)
+            if not isinstance(group_key, str) or not group_key or not group_key.isascii() or not group_key.isdecimal():
+                raise ValueError('Invalid cleanup group key')
+            normalized = group_key.lstrip('0') or '0'
+            if len(normalized) > 19 or int(normalized) > 9223372036854775807:
+                raise ValueError('Invalid cleanup group key')
+            group_value = int(normalized)
+        roots = self._register_roots(roots)
+        sql, params, selected = self._cleanup_source(roots, excluded, scope_root, scope_relative, recursive,
+                                                     '' if grouped else query, file_type, materialized=grouped)
         sql += ', counted AS (SELECT *,count(*) OVER (PARTITION BY size) AS size_count FROM files) '
         where = ' WHERE size_count>1' if matching_sizes else ''
         field = {'name': 'name COLLATE NATURAL_NAME', 'location': 'parent COLLATE NATURAL_NAME',
@@ -516,32 +569,48 @@ class DirectoryIndex:
             order = '(duration IS NULL),' + order
         if matching_sizes:
             order = f"size {'DESC' if descending else 'ASC'},rel COLLATE NATURAL_NAME,root"
+        table = 'counted'
+        if grouped:
+            sql += (f', grouped AS (SELECT *,{value} AS group_value FROM counted WHERE {eligible}), '
+                    'selected_group AS (SELECT group_value FROM grouped WHERE group_value=? GROUP BY group_value '
+                    'HAVING count(*)>1 AND max(instr(folded,?)>0)) ')
+            params = [*params, group_value, query.casefold()]
+            table = 'grouped'
+            where = ' WHERE group_value IN (SELECT group_value FROM selected_group)'
+            order = 'parent COLLATE NATURAL_NAME,name COLLATE NATURAL_NAME,rel,root'
         # Parent is derived in SQL so location sorting covers all results before paging.
-        source = '(SELECT *,substr(rel,1,length(rel)-length(name)-1) AS parent FROM counted)'
-        page, page_size = max(1, int(page)), min(500, max(1, int(page_size)))
+        source = f'(SELECT *,substr(rel,1,length(rel)-length(name)-1) AS parent FROM {table})'
+        page, page_size = max(1, int(page)), min(100 if grouped else 500, max(1, int(page_size)))
         with self._reader() as db:
-            total = db.execute(sql + 'SELECT count(*) FROM counted' + where, params).fetchone()[0]
-            page = min(page, max(1, (total + page_size - 1) // page_size))
-            rows = db.execute(sql + 'SELECT * FROM ' + source + where + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?',
-                              [*params, page_size, (page - 1) * page_size]).fetchall()
-            coverage = []
-            for rid in selected:
-                root = next(root for root in roots if root_id(root) == rid)
-                extra, values = self._exclusion_sql(root, (excluded or {}).get(rid, ()), alias='f')
-                extra = [clause.replace('f.rel', 'f.directory') for clause in extra]
-                summary = db.execute('SELECT count(*),max(updated),min(updated) FROM folders f WHERE f.root=?'
-                                     + ''.join(' AND ' + clause for clause in extra)
-                                     + ' AND NOT reserved_path(f.directory)', [rid, *values]).fetchone()
-                coverage.append(dict(root_id=rid, folders=summary[0], updated_at=summary[1],
-                                     state='stale' if summary[0] and time.time() - summary[2] >= self.ttl else 'ready' if summary[0] else 'loading',
-                                     refreshing=any(key[0] == rid for key in tuple(self._jobs))))
+            if grouped:
+                rows, total, page, _ = self._cleanup_group_page(db, sql, params, source + where, order, page, page_size)
+            else:
+                total = db.execute(sql + 'SELECT count(*) FROM ' + table + where, params).fetchone()[0]
+                page = min(page, max(1, (total + page_size - 1) // page_size))
+                rows = db.execute(sql + 'SELECT * FROM ' + source + where + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?',
+                                  [*params, page_size, (page - 1) * page_size]).fetchall()
+            status = self._cleanup_status(db, roots, selected, excluded)
         items = [{key: row[key] for key in ('name', 'rel', 'kind', 'size', 'mtime', 'duration', 'metadata_status', 'version', 'size_count')}
                  | {'root_id': row['root'], 'parent': row['rel'].rpartition('/')[0]} for row in rows]
+        return dict(items=items, total=total, page=page, page_size=page_size, pages=(total + page_size - 1) // page_size,
+                    **status)
+
+    def _cleanup_status(self, db, roots, selected, excluded):
+        coverage = []
+        for rid in selected:
+            root = next(root for root in roots if root_id(root) == rid)
+            extra, values = self._exclusion_sql(root, (excluded or {}).get(rid, ()), alias='f')
+            extra = [clause.replace('f.rel', 'f.directory') for clause in extra]
+            summary = db.execute('SELECT count(*),max(updated),min(updated) FROM folders f WHERE f.root=?'
+                                 + ''.join(' AND ' + clause for clause in extra)
+                                 + ' AND NOT reserved_path(f.directory)', [rid, *values]).fetchone()
+            coverage.append(dict(root_id=rid, folders=summary[0], updated_at=summary[1],
+                                 state='stale' if summary[0] and time.time() - summary[2] >= self.ttl else 'ready' if summary[0] else 'loading',
+                                 refreshing=any(key[0] == rid for key in tuple(self._jobs))))
         failures = [value for key, value in tuple(self._errors.items()) if key[0] in selected]
         updated = max((row['updated_at'] or 0 for row in coverage), default=0)
         state = 'stale' if any(row['state'] == 'stale' for row in coverage) else 'ready' if any(row['folders'] for row in coverage) else 'loading'
-        return dict(items=items, total=total, page=page, page_size=page_size, pages=(total + page_size - 1) // page_size,
-                    coverage=coverage, state=failures[0][0] if failures else state, refreshing=any(row['refreshing'] for row in coverage),
+        return dict(coverage=coverage, state=failures[0][0] if failures else state, refreshing=any(row['refreshing'] for row in coverage),
                     updated_at=updated, version=None, error=failures[0][1] if failures else None)
 
     def cleanup_folders(self, root, relative='', *, excluded=(), page=1, page_size=100):
@@ -608,6 +677,12 @@ class DirectoryIndex:
             except ValueError:
                 continue
             directory = alias.rpartition('/')[0]
+            if os.name == 'nt':
+                # Physical keys are lowercase on Windows; refresh using the saved snapshot spelling.
+                folder = self._db.execute('SELECT directory FROM folders WHERE root=? AND casefold(directory)=? '
+                                          'ORDER BY updated DESC,directory LIMIT 1', (rid, directory.casefold())).fetchone()
+                if folder:
+                    directory = folder['directory']
             sql = 'DELETE FROM entries WHERE root=? AND casefold(rel)=?'
             self._db.execute(sql + (' AND NOT (root=? AND directory=? AND version=?)' if keep else ''),
                              (rid, alias.casefold(), *keep) if keep else (rid, alias.casefold()))

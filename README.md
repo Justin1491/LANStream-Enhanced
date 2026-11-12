@@ -31,7 +31,7 @@ Automatic indexing is enabled by default. Set `automatic_indexing=false` in `con
 
 ### Library Cleanup and recoverable Trash
 
-- A separate indexed table provides partial filename search, folder/subfolder scopes, exact-size comparison groups, sortable attributes, and optional cached thumbnails.
+- Folder-first Cleanup includes subfolders by default, with separate size and saved-duration groups, whole-group filename search, sortable file lists, and optional cached thumbnails.
 - Explicit background duration preparation saves video lengths for Cleanup and ordinary browsing; it pauses between files during tracked playback.
 - On Windows, opt-in authenticated file changes support recoverable Trash, restore without overwriting, and separately confirmed permanent deletion. No automatic purge runs.
 - Back up the durable `cache/trash.sqlite3` journal and each library's `.lanstream-trash` directory, as well as the rest of the cache. Trash retains media disk space until permanent deletion.

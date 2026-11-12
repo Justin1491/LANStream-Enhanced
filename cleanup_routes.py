@@ -169,11 +169,38 @@ def register_cleanup(server):
         options = query_args()
         if options['sort'] in {'trashed_at', 'state'}:
             abort(400)
-        result = server.directory_index.cleanup(roots, **scope, **options,
-                                                matching_sizes=request.args.get('matching_sizes') == '1')
+        group = {}
+        if 'group_by' in request.args or 'group_key' in request.args:
+            group = group_args(members=True)
+        result = server.directory_index.cleanup(roots, **scope, **options, **group,
+                                                matching_sizes=not group and request.args.get('matching_sizes') == '1')
         for item in result['items']:
             item['selection_token'] = service().selection(profile, item)
         result = server.explorer_items(result)
+        result['writes_enabled'] = service().writes_enabled()
+        return jsonify(result)
+
+    def group_args(members=False):
+        group_by = request.args.get('group_by', 'size')
+        if group_by not in {'size', 'duration'}:
+            abort(400)
+        result = dict(group_by=group_by)
+        if members:
+            value = request.args.get('group_key', '')
+            if ('group_by' not in request.args or not value.isascii() or not value.isdecimal()
+                    or len(value) > 19 or int(value) > 9223372036854775807):
+                abort(400)
+            result['group_key'] = value
+        elif 'group_key' in request.args:
+            abort(400)
+        return result
+
+    @bp.get('/api/cleanup/groups')
+    def groups():
+        _, roots, scope = scope_args()
+        options = query_args()
+        result = server.directory_index.cleanup_groups(roots, **scope, **group_args(),
+                     query=options['query'], file_type=options['file_type'], page=options['page'], page_size=20)
         result['writes_enabled'] = service().writes_enabled()
         return jsonify(result)
 
