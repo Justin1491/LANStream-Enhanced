@@ -53,6 +53,85 @@ class ExplorerRoutes(unittest.TestCase):
         with client.session_transaction() as session:
             return {'X-LANStream-CSRF': session['csrf_token']}
 
+    def test_video_details_and_player_reuse_probe_and_refresh_changed_file(self):
+        import json
+        from types import SimpleNamespace
+        source = self.root / 'Café Clip 2.mp4'
+        info = {'format': {'duration': '20'}, 'streams': [
+            {'index': 0, 'codec_type': 'video', 'codec_name': 'h264', 'width': 320, 'height': 240},
+            {'index': 1, 'codec_type': 'audio', 'codec_name': 'aac'}]}
+        result = SimpleNamespace(returncode=0, stdout=json.dumps(info), stderr='')
+        with patch.object(self.server.subprocess, 'run', return_value=result) as run, \
+             patch.object(self.server.image_scheduler, 'submit'):
+            self.assertEqual(self.client.get('/video/0/Café Clip 2.mp4').status_code, 200)
+            self.assertEqual(self.client.get('/play/0/Café Clip 2.mp4').status_code, 200)
+            self.assertEqual(run.call_count, 1)
+            source.write_bytes(b'new and longer content')
+            self.assertEqual(self.client.get('/play/0/Café Clip 2.mp4').status_code, 200)
+            self.assertEqual(run.call_count, 2)
+            bob = self.server.app.test_client()
+            bob.post('/login', data={'password': 'bob'})
+            self.assertEqual(bob.get('/play/0/Private/Hidden.mp4').status_code, 200)
+            with patch.object(self.server, 'render_template', return_value=''):
+                self.assertEqual(self.client.get('/play/0/Private/Hidden.mp4').status_code, 404)
+            self.assertEqual(run.call_count, 3)
+
+    def test_probe_shares_concurrent_work_and_retries_failures(self):
+        import json
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from types import SimpleNamespace
+        source = self.root / 'Café Clip 2.mp4'
+        started, waiting, finish = threading.Event(), threading.Event(), threading.Event()
+        result = SimpleNamespace(returncode=0, stdout=json.dumps({'format': {'duration': '20'}}), stderr='')
+
+        def slow_probe(*args, **kwargs):
+            started.set()
+            self.assertTrue(finish.wait(5))
+            return result
+
+        with patch.object(self.server.subprocess, 'run', side_effect=slow_probe) as run:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(self.server.probe, source)
+                self.assertTrue(started.wait(5))
+                with self.server._probe_lock:
+                    pending = next(iter(self.server._probe_pending.values()))
+                original_result = pending.result
+                def wait_for_result():
+                    waiting.set()
+                    return original_result()
+                with patch.object(pending, 'result', side_effect=wait_for_result):
+                    second = pool.submit(self.server.probe, source)
+                    try:
+                        self.assertTrue(waiting.wait(5))
+                    finally:
+                        finish.set()
+                    self.assertEqual(first.result()['format']['duration'], '20')
+                    self.assertEqual(second.result()['format']['duration'], '20')
+            self.assertEqual(run.call_count, 1)
+        changed = self.server.probe(source)
+        changed['format']['duration'] = 'incorrect'
+        self.assertEqual(self.server.probe(source)['format']['duration'], '20')
+        source.write_bytes(b'different size after first probe')
+        failure = SimpleNamespace(returncode=1, stdout='', stderr='failed')
+        with patch.object(self.server.subprocess, 'run', side_effect=[failure, result]) as run:
+            with self.assertRaises(RuntimeError):
+                self.server.probe(source)
+            self.assertEqual(self.server.probe(source)['format']['duration'], '20')
+            self.assertEqual(run.call_count, 2)
+
+    def test_probe_cache_expires(self):
+        from types import SimpleNamespace
+        source = self.root / 'Café Clip 2.mp4'
+        result = SimpleNamespace(returncode=0, stdout='{"format":{"duration":"20"}}', stderr='')
+        with patch.object(self.server.subprocess, 'run', return_value=result) as run:
+            with patch.object(self.server.time, 'monotonic', return_value=1000):
+                self.server.probe(source)
+                self.server.probe(source)
+            with patch.object(self.server.time, 'monotonic', return_value=1301):
+                self.server.probe(source)
+            self.assertEqual(run.call_count, 2)
+
     def test_cold_shell_and_warm_page_do_not_enumerate_in_request(self):
         response = self.client.get('/browse/0/')
         self.assertEqual(response.status_code, 200)
