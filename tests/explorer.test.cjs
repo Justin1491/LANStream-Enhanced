@@ -15,7 +15,7 @@ test('Details shows saved durations without wrapping hours or inventing missing 
   assert.deepEqual(durations, ['25:01:01', '—']);
 });
 
-function explorer(automaticIndexing, resultOverrides = {}) {
+function explorer(automaticIndexing, resultOverrides = {}, options = {}) {
   const images = [], checks = [], observers = [], timers = new Map();
   let now = 0, timerSequence = 0;
   class Element extends EventTarget {
@@ -47,16 +47,21 @@ function explorer(automaticIndexing, resultOverrides = {}) {
     'explorerQuery', 'explorerSort', 'fileType', 'gridDensity', 'previousPage',
     'nextPage', 'densityControl', 'pageLabel', 'coverage'].map(id => [id, new Element('div')]));
   elements.explorer.dataset = {api:'/api/browse/0/', mode:'browse', root:'0', relative:''};
+  if (options.mode) elements.explorer.dataset.mode = options.mode;
+  if (options.mode === 'favorites') for (const id of ['favoritesEmpty', 'favoritesEmptyTitle', 'favoritesEmptyDescription', 'favoritesBrowse', 'clearFavoriteFilter', 'explorerPagination']) elements[id] = new Element('div');
+  if (options.mode === 'search') for (const id of ['searchContextLabel', 'searchContextLocation', 'searchContextDetails', 'searchScope']) elements[id] = new Element('div');
+  if (options.tools) elements.explorerTools = new Element('details');
   if (automaticIndexing !== undefined) {
     elements.explorer.dataset.automaticIndexing = String(automaticIndexing);
     for (const id of ['startIndex', 'pauseIndex', 'indexStatus']) elements[id] = new Element('div');
   }
-  const location = {pathname:'/browse/0/', search:''};
+  const location = {pathname:'/browse/0/', search:options.search || ''};
   const navigate = (_data, _title, url) => {
     const target = new URL(url, 'http://fixture');
     Object.assign(location, {pathname:target.pathname, search:target.search});
   };
   const window = new EventTarget();
+  const media = new EventTarget(); media.matches = !!options.mobile;
   window.scrollTo = () => {};
   vm.runInNewContext(script, {
     document: {
@@ -67,7 +72,7 @@ function explorer(automaticIndexing, resultOverrides = {}) {
       createDocumentFragment: () => new Element('fragment'),
     },
     window, location, history:{pushState:navigate, replaceState:navigate},
-    localStorage:{getItem:() => null, setItem() {}}, matchMedia:() => ({matches:false}),
+    localStorage:{getItem:() => null, setItem() {}}, matchMedia:() => media,
     URLSearchParams, AbortController, Date: class extends Date { static now() { return now; } },
     setTimeout: (callback, delay) => {
       const id = ++timerSequence;
@@ -82,6 +87,12 @@ function explorer(automaticIndexing, resultOverrides = {}) {
       disconnect() {}
     },
     fetch: async (url, options) => {
+      if (url === '/api/favorites' && options.method === 'POST') {
+        const data = JSON.parse(options.body);
+        resultOverrides.items = (resultOverrides.items || []).filter(item => item.rel !== data.rel);
+        resultOverrides.total = resultOverrides.items.length;
+        return {ok:true, json:async () => ({favorite:data.enabled})};
+      }
       if (url.startsWith('/api/index/')) return {ok:true, json:async () => ({crawls:[]})};
       if (url.startsWith('/ready/')) {
         return new Promise((resolve, reject) => {
@@ -95,7 +106,7 @@ function explorer(automaticIndexing, resultOverrides = {}) {
           size:10, thumb_url:`/thumbnail/${page}/${i}`, ready_url:`/ready/${page}/${i}`})), ...resultOverrides})};
     },
   });
-  return {elements, images, checks, observers, timers, window,
+  return {elements, images, checks, observers, timers, window, media,
     async advance(milliseconds) {
       const end = now + milliseconds;
       while (true) {
@@ -108,6 +119,60 @@ function explorer(automaticIndexing, resultOverrides = {}) {
     intersect() { const observer = observers.at(-1); observer.callback(observer.targets.map(target => ({target, isIntersecting:true}))); },
   };
 }
+
+test('More tools starts collapsed on phones and remains reachable after a breakpoint change', async () => {
+  const e = explorer(undefined, {}, {tools:true, mobile:true});
+  await flush();
+  assert.equal(e.elements.explorerTools.open, false);
+  e.elements.explorerTools.open = true;
+  e.media.matches = false; e.media.dispatchEvent(new Event('change'));
+  assert.equal(e.elements.explorerTools.open, true);
+  e.media.matches = true; e.media.dispatchEvent(new Event('change'));
+  assert.equal(e.elements.explorerTools.open, false);
+});
+
+test('Favorites distinguishes a first-use empty collection from a filter with no matches', async () => {
+  const e = explorer(undefined, {items:[],total:0}, {mode:'favorites',search:'?file_type=pictures'});
+  await flush();
+  assert.equal(e.elements.favoritesEmpty.hidden, false);
+  assert.equal(e.elements.favoritesEmptyTitle.textContent, 'No matching favorites');
+  assert.equal(e.elements.clearFavoriteFilter.hidden, false);
+  assert.equal(e.elements.favoritesBrowse.hidden, true);
+  assert.equal(e.elements.explorerPagination.hidden, true);
+  e.elements.clearFavoriteFilter.onclick(); await flush();
+  assert.equal(e.elements.fileType.value, 'all');
+  assert.equal(e.elements.favoritesEmptyTitle.textContent, 'No favorites yet');
+  assert.equal(e.elements.favoritesBrowse.hidden, false);
+  assert.equal(e.elements.clearFavoriteFilter.hidden, true);
+});
+
+test('Favorites shows cached metadata and leaves unavailable values unknown', async () => {
+  const e = explorer(undefined, {items:[{name:'Known',kind:'video',url:'/video',size:5662310,duration:12,mtime:1}, {name:'Unavailable',kind:'video',url:'/video',size:null,duration:null,mtime:null}]}, {mode:'favorites'});
+  await flush();
+  const metadata = e.elements.explorerItems.children.map(row => row.children[0].children.find(node => node.className === 'item-label').children.find(node => node.className === 'item-favorite-meta').children.filter(node => node.tagName === 'dd').map(node => node.textContent));
+  assert.equal(metadata[0][0], '5.4 MB');
+  assert.equal(metadata[0][1], '00:00:12');
+  assert.notEqual(metadata[0][2], '—');
+  assert.deepEqual(metadata[1], ['—', '—', '—']);
+});
+
+test('Search displays the server-authorized root and folder for its active scope', async () => {
+  const e = explorer(undefined, {items:[],scope_context:{root_label:'Media 1',relative:'Café / <notes>',recursive:false}}, {mode:'search',search:'?scope=folder'});
+  await flush();
+  assert.equal(e.elements.searchContextLocation.textContent, 'Media 1 / Café / <notes>');
+  assert.equal(e.elements.searchContextLabel.textContent, 'Searching this folder');
+  assert.equal(e.elements.searchContextDetails.textContent, 'Subfolders excluded');
+});
+
+test('removing the last Favorite immediately shows first-use guidance', async () => {
+  const e = explorer(undefined, {items:[{name:'Clip',kind:'video',url:'/video',rel:'Clip.mp4',root_index:0,favorite:true}],total:1}, {mode:'favorites'});
+  await flush();
+  const star = e.elements.explorerItems.children[0].children[1].children[0];
+  await star.onclick();
+  assert.equal(e.elements.explorerItems.children.length, 0);
+  assert.equal(e.elements.favoritesEmpty.hidden, false);
+  assert.equal(e.elements.favoritesEmptyTitle.textContent, 'No favorites yet');
+});
 
 test('empty indexing status reflects whether automatic indexing is enabled', async () => {
   const disabled = explorer(false), enabled = explorer(true);

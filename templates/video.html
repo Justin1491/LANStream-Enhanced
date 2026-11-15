@@ -11,6 +11,7 @@
 </div>
 <div class="detail-info">
 <h1>{{ filename }}</h1>
+{% if rename_item %}<button type="button" data-rename-file data-name="{{ rename_item.name }}" data-token="{{ rename_item.selection_token }}">Rename</button>{% endif %}
 {% include 'favorite_button.html' %}
 <dl>
 <dt>Size</dt><dd>{{ size }}</dd>

@@ -750,6 +750,49 @@ class DirectoryIndex:
                     self._schedule(Path(path), directory)
             self._condition.notify_all()
 
+    def rename_file(self, root, relative, renamed_to, *, before, fingerprint):
+        self._register_roots([root])
+        relative, renamed_to = _relative(relative), _relative(renamed_to)
+        physical = _path_key(root, relative)
+        name = Path(renamed_to).name
+        with self._condition, self._db:
+            entries = self._db.execute('SELECT e.* FROM entries e JOIN index_roots r ON e.root=r.root '
+                                       'JOIN folders f ON e.root=f.root AND e.directory=f.directory AND e.version=f.version '
+                                       'WHERE path_key(r.path,e.rel)=?', (physical,)).fetchall()
+            favorites = self._db.execute('SELECT f.* FROM favorites f JOIN index_roots r ON f.root=r.root '
+                                         'WHERE path_key(r.path,f.rel)=?', (physical,)).fetchall()
+            metadata = self._db.execute('SELECT m.* FROM media_metadata m JOIN index_roots r ON m.root=r.root '
+                                        'WHERE path_key(r.path,m.rel)=?', (physical,)).fetchall()
+            destination = _path_key(root, renamed_to)
+            tombstone = self._db.execute('SELECT fingerprint FROM hidden_files WHERE path=? AND pending=0', (destination,)).fetchone()
+            if tombstone and tombstone['fingerprint'] and json.loads(tombstone['fingerprint']) != fingerprint:
+                self._db.execute('DELETE FROM hidden_aliases WHERE path=?', (destination,))
+                self._db.execute('DELETE FROM hidden_files WHERE path=?', (destination,))
+            aliases = self._invalidate_path(physical) + self._invalidate_path(destination)
+            # Keep the renamed file visible while the authoritative folder scan catches up.
+            for row in entries:
+                if row['size'] == before['size'] and row['mtime'] == before['mtime']:
+                    rel = Path(row['rel']).with_name(name).as_posix()
+                    self._db.execute('INSERT OR REPLACE INTO entries VALUES(?,?,?,?,?,?,?,?,?)',
+                                     (row['root'], row['directory'], row['version'], name, rel, row['kind'],
+                                      fingerprint['size'], fingerprint['mtime'], name.casefold()))
+            for row in favorites:
+                rel = Path(row['rel']).with_name(name).as_posix()
+                self._db.execute('UPDATE OR REPLACE favorites SET rel=?,name=? WHERE profile=? AND root=? AND rel=?',
+                                 (rel, name, row['profile'], row['root'], row['rel']))
+            for row in metadata:
+                if json.loads(row['fingerprint']) == before:
+                    rel = Path(row['rel']).with_name(name).as_posix()
+                    self._db.execute('INSERT OR REPLACE INTO media_metadata VALUES(?,?,?,?,?,?,?,?,?)',
+                                     (row['root'], rel, fingerprint['size'], fingerprint['mtime'], json.dumps(fingerprint),
+                                      row['duration'], row['status'], row['attempted'], row['error']))
+            for rid, path, alias, directory in aliases:
+                if (rid, directory) in self._jobs:
+                    self._jobs[(rid, directory)]['refresh_after'] = True
+                else:
+                    self._schedule(Path(path), directory)
+            self._condition.notify_all()
+
     def set_favorite(self, profile_id, root, relative, kind, name, enabled):
         self._register_roots([root])
         relative = _relative(relative)
@@ -769,8 +812,12 @@ class DirectoryIndex:
                 extra, values = self._exclusion_sql(root, excluded.get(rid, ()))
                 clauses.append('(' + ' AND '.join(['e.root=?', *extra]) + ')')
                 params.extend([rid, *values])
-            sql = 'FROM (SELECT root,rel,kind,name,0 AS size,NULL AS mtime FROM favorites WHERE profile=?) e WHERE (' + (' OR '.join(clauses) or '0') + ')'
-            result = self._page(sql, [str(profile_id), *params], page, page_size, file_type=file_type)
+            sql = ('FROM (SELECT fav.root,fav.rel,fav.kind,fav.name,i.size,i.mtime FROM favorites fav '
+                   'LEFT JOIN entries i ON i.root=fav.root AND i.rel=fav.rel '
+                   'AND i.version=(SELECT version FROM folders f WHERE f.root=i.root AND f.directory=i.directory) '
+                   'WHERE fav.profile=?) e '
+                   + self._metadata_join() + ' WHERE (' + (' OR '.join(clauses) or '0') + ')')
+            result = self._page(sql, [str(profile_id), *params], page, page_size, file_type=file_type, include_duration=True)
             result.update(state='ready', refreshing=False, version=None, updated_at=None, error=None)
             return result
 

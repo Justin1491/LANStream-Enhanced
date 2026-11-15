@@ -68,6 +68,10 @@ class CleanupService:
             return hasattr(self, 'durations') and self.durations.is_busy(path)
 
     def changed(self, root, relative, hidden, **version):
+        renamed_to = version.pop('renamed_to', None)
+        if renamed_to is not None:
+            self.server.directory_index.rename_file(root, relative, renamed_to, **version)
+            return
         restored_duration = version.pop('restored_duration', None)
         self.server.directory_index.hide_file(root, relative, hidden, **version)
         if not hidden and restored_duration is not None:
@@ -240,7 +244,7 @@ def register_cleanup(server):
         if not isinstance(data, dict):
             abort(400)
         action, items = data.get('action'), data.get('items')
-        if action not in {'preview_move', 'move', 'preview_restore', 'restore', 'preview_purge', 'purge', 'recover'}:
+        if action not in {'preview_move', 'move', 'preview_restore', 'restore', 'preview_purge', 'purge', 'recover', 'rename'}:
             abort(400)
         if not isinstance(items, list) or not 1 <= len(items) <= 100 or not all(isinstance(item, dict) for item in items):
             abort(400)
@@ -248,7 +252,11 @@ def register_cleanup(server):
             operation = str(uuid.UUID(data['operation_id']))
         except (KeyError, TypeError, ValueError, AttributeError):
             abort(400)
-        if action == 'preview_move':
+        if action == 'rename':
+            if len(items) != 1 or set(items[0]) != {'selection_token', 'name'} or not isinstance(items[0]['name'], str):
+                abort(400)
+            items = [service().selected(profile, items[0]['selection_token']) | {'name': items[0]['name']}]
+        elif action == 'preview_move':
             items = [service().selected(profile, item.get('selection_token')) for item in items]
         elif action in {'move', 'restore', 'purge'}:
             if any(set(item) != {'confirmation_token'} or not isinstance(item['confirmation_token'], str) for item in items):

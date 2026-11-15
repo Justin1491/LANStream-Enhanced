@@ -96,6 +96,13 @@ page 1. The URL preserves the selection for reloads and Browser Back/Forward.
 Previous/Next replaces a page of at most 100 items, keeping the DOM bounded.
 Browser Back restores the page/query; view switching keeps the same items.
 
+On phones, **More tools** holds sort direction, folder refresh, thumbnail
+preparation and the Library Cleanup shortcut. Filtering, type, sort and view
+selection stay visible. Desktop Details uses consistent columns, including a
+reserved Favorite column, so metadata lines up across videos, folders and documents.
+Search shows the active library and relative folder below **Search scope**;
+**Current subtree** includes subfolders and **Current folder** does not.
+
 The first open returns a loading shell and starts a scan. Cold SMB enumeration
 can take seconds. Warm revisits use the SSD snapshot. After 300 seconds the
 last snapshot is shown while a refresh runs. Refresh folder requests another
@@ -145,6 +152,19 @@ independent of root ordering. Missing or renamed items stay at their original
 location and can be removed; they are not silently rematched. Access is checked
 again on reads and playback. Changing a profile password changes its identity
 and therefore starts a new Favorites set for that profile.
+
+Favorites reuses indexed size, modification time and saved duration without
+reading the media share during the request. Missing metadata displays as unknown,
+and cached values can be stale while a library is offline. The empty screen
+explains how to add favorites; an empty file-type filter offers **Clear filter**.
+Image and document viewers fit beneath the responsive header. When a document
+cannot open, **Back to folder** returns to its authorized parent; other errors
+offer **Media roots**.
+
+Settings explains automatic thumbnail preparation separately from individual
+thumbnail requests. Storage measurements show Cache and Application totals;
+expand **Technical storage details** for individual files. Expanded details
+remain open while status refreshes in the background.
 
 ## Thumbnails and media safety
 

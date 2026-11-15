@@ -107,6 +107,60 @@ class DirectoryIndexTests(unittest.TestCase):
         excluded = self.index.search([self.root], query='', excluded={root_id(self.root): ('nested',)})
         self.assertEqual(excluded['coverage'][0]['folders'], 0)
 
+    def test_favorites_reuse_current_indexed_metadata_and_invalidate_changed_duration(self):
+        path = self.root / 'clip.mp4'
+        path.write_bytes(b'video')
+        indexed = self.ready()['items'][0]
+        info = path.stat()
+        fingerprint = {key: getattr(info, 'st_' + key) for key in ('size', 'mtime', 'mtime_ns', 'ctime_ns', 'ino', 'dev')}
+        self.assertTrue(self.index.save_duration(self.root, 'clip.mp4', fingerprint, 12.5))
+        self.index.set_favorite('p', self.root, 'clip.mp4', 'video', 'clip.mp4', True)
+        item = self.index.favorites('p', [self.root])['items'][0]
+        self.assertEqual((item['size'], item['mtime'], item['duration'], item['metadata_status']),
+                         (5, indexed['mtime'], 12.5, 'ready'))
+        path.write_bytes(b'replacement')
+        self.ready(refresh=True)
+        item = self.index.favorites('p', [self.root])['items'][0]
+        self.assertEqual(item['size'], 11)
+        self.assertIsNone(item['duration'])
+        self.assertEqual(item['metadata_status'], 'missing')
+
+    def test_favorites_preserve_unknown_and_offline_items_without_filesystem_io(self):
+        (self.root / 'cached.mp4').write_bytes(b'cached')
+        indexed = self.ready()['items'][0]
+        for name in ('cached.mp4', 'unknown.mp4'):
+            self.index.set_favorite('p', self.root, name, 'video', name, True)
+        with patch('directory_index.os.scandir', side_effect=OSError('offline')):
+            self.index.listing(self.root, refresh=True)
+            self.assertTrue(self.index.wait_for_idle())
+        with patch('directory_index.os.scandir', side_effect=AssertionError('Favorites scanned media')), \
+             patch.object(Path, 'stat', side_effect=AssertionError('Favorites statted media')):
+            result = self.index.favorites('p', [self.root])
+        self.assertEqual(result['total'], 2)
+        cached, unknown = result['items']
+        self.assertEqual((cached['size'], cached['mtime']), (6, indexed['mtime']))
+        self.assertEqual((unknown['size'], unknown['mtime'], unknown['duration']), (None, None, None))
+        self.assertEqual(unknown['metadata_status'], 'missing')
+
+    def test_favorite_metadata_preserves_profile_root_exclusion_type_and_page_boundaries(self):
+        other = self.root.parent / 'other'
+        other.mkdir()
+        (other / 'clip.mp4').write_bytes(b'other root')
+        self.index.listing(other)
+        self.assertTrue(self.index.wait_for_idle())
+        for name, kind in (('clip.mp4', 'video'), ('excluded.mp4', 'video'), ('picture.jpg', 'image')):
+            self.index.set_favorite('p', self.root, name, kind, name, True)
+        self.index.set_favorite('p', other, 'clip.mp4', 'video', 'clip.mp4', True)
+        self.index.set_favorite('other', self.root, 'private.mp4', 'video', 'private.mp4', True)
+        result = self.index.favorites('p', [self.root], excluded={root_id(self.root): ('excluded.mp4',)},
+                                      file_type='videos', page=9, page_size=1)
+        self.assertEqual((result['total'], result['page'], result['pages']), (1, 1, 1))
+        self.assertEqual(result['items'][0]['rel'], 'clip.mp4')
+        self.assertIsNone(result['items'][0]['size'])
+        result = self.index.favorites('p', [other])
+        self.assertEqual((result['total'], result['items'][0]['size']), (1, 10))
+        self.assertEqual(self.index.favorites('p', [])['total'], 0)
+
     def test_offline_retains_snapshot(self):
         (self.root / 'one.mp4').touch()
         initial = self.ready()
@@ -380,6 +434,8 @@ class DirectoryIndexTests(unittest.TestCase):
         self.index.wait_for_idle()
         self.assertEqual(self.index.search([self.root], query='needle')['total'], 0)
         self.assertEqual(self.index.favorites('p', [self.root])['total'], 1)
+        item = self.index.favorites('p', [self.root])['items'][0]
+        self.assertEqual((item['size'], item['mtime'], item['duration']), (None, None, None))
 
 
 if __name__ == '__main__':

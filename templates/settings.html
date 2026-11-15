@@ -8,11 +8,18 @@
   <section class="settings-card"><h2>Automatic thumbnails</h2>
     <p>Prepare indexed libraries and subfolders after 60 seconds without LANStream users. Browsing and playback take priority.</p>
     <label><input type="checkbox" id="automaticThumbnails"> Enable automatic thumbnail preparation</label>
-    <p id="thumbnailStatus" class="muted">Loading…</p><p id="schedulerStatus" class="muted"></p>
+    <div class="thumbnail-state"><strong id="thumbnailStatus">Loading…</strong><p id="thumbnailReason" class="muted"></p></div>
+    <p id="automaticCounts" class="muted"></p>
+    <details><summary>Thumbnail request details</summary>
+      <p class="muted">Individual thumbnail requests are tracked separately from automatic preparation. Request failures reflect the current retry delay; automatic counts cover the preparation pass.</p>
+      <p id="schedulerStatus" class="muted"></p>
+    </details>
   </section>
   <section class="settings-card"><h2>Directory indexing</h2><div id="indexingStatus" class="muted">Loading…</div></section>
   <section class="settings-card"><h2>Storage</h2><p>Cache and application files only; library files are excluded. Sizes are measured when requested.</p>
-    <button id="scanStorage" type="button">Measure storage</button><p id="storageStatus" role="status"></p><div id="storageDetails"></div>
+    <dl id="storageTotals" class="storage-totals"></dl>
+    <details id="technicalStorage" hidden><summary>Technical storage details</summary><div id="storageDetails"></div></details>
+    <button id="scanStorage" type="button">Measure storage</button><p id="storageStatus" role="status"></p>
   </section>
   <section class="settings-card"><h2>Software updates</h2><p>Check the latest source revision on GitHub. This does not install updates.</p>
     <button id="checkUpdates" type="button">Check for updates</button><p id="updateStatus" role="status"></p>

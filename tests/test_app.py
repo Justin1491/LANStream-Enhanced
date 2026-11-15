@@ -139,6 +139,19 @@ class ExplorerRoutes(unittest.TestCase):
         self.assertNotIn(str(self.root), str(results))
         self.assertEqual(self.client.get('/api/browse/0/Private').status_code, 404)
 
+    def test_search_scope_context_names_authorized_location_without_server_paths(self):
+        response = self.client.get('/api/search?scope=folder&root=0&relative=Albums/Nature')
+        self.assertEqual(response.status_code, 200)
+        context = response.get_json()['scope_context']
+        self.assertEqual(context, dict(root_label=self.server.root_label(self.root, 0),
+                                       relative='Albums/Nature', recursive=False))
+        self.assertNotIn(str(self.root), response.get_data(as_text=True))
+        subtree = self.client.get('/api/search?scope=subtree&root=0&relative=Albums').get_json()
+        self.assertTrue(subtree['scope_context']['recursive'])
+        self.assertIsNone(self.client.get('/api/search').get_json()['scope_context'])
+        self.assertEqual(self.client.get('/api/search?scope=folder&root=0&relative=Private').status_code, 404)
+        self.assertEqual(self.client.get('/api/search?scope=folder&root=99').status_code, 404)
+
     def test_file_type_filter_in_browse_and_search_keeps_folders(self):
         (self.root / 'Albums').mkdir()
         for name in ('Photo.png', 'Guide.pdf', 'Story.cbz', 'Archive.cbr', 'Notes.txt', 'Readme.md', 'Ignored.bin'):

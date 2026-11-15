@@ -1209,6 +1209,9 @@ def explorer_items(result):
                     url=url_for(routes[item['kind']], root_index=index, relpath=item['rel']),
                     folder_url=url_for('browse', root_index=index, relpath=item['parent']),
                     location='/'.join(filter(None, (root_label(root, index), item['parent']))))
+        if (item['kind'] != 'folder' and 'selection_token' not in item
+                and item['size'] is not None and item['mtime'] is not None and cleanup_service.writes_enabled()):
+            item['selection_token'] = cleanup_service.selection(profile, dict(version=None, duration=None, **{key: item[key] for key in ('root_id', 'rel', 'size', 'mtime')}))
         if item['kind'] not in {'folder', 'text'}:
             item['thumb_url'] = url_for('thumbnail', root_index=index, relpath=item['rel'])
             item['ready_url'] = url_for('image_ready', kind='thumbs', root_index=index, relpath=item['rel'])
@@ -1289,6 +1292,8 @@ def search_api():
         excluded=excluded, scope_root=scope_root, scope_relative=scope_relative,
         recursive=recursive, **explorer_page_args())
     result['crawls'] = directory_index.crawl_status(active_profile()['id'], roots) if active_profile() else []
+    result['scope_context'] = (dict(root_label=root_label(scope_root, index), relative=scope_relative,
+                                    recursive=recursive) if scope_root is not None else None)
     return jsonify(explorer_items(result))
 
 
@@ -1516,12 +1521,18 @@ def document_viewer(root_index, relpath):
         else:
             page_count = len(_comic_names(source))
     except (zipfile.BadZipFile, pymupdf.FileDataError, RuntimeError, ValueError):
-        return render_template("error.html", message="Unable to open this document. It may be damaged or unsupported."), 415
+        return render_template("error.html", error_title="Unable to open this document",
+                               message="Unable to open this document. It may be damaged or unsupported.",
+                               filename=source.name, back_url=url_for('browse', root_index=root_index, relpath=parent_relpath(relpath))), 415
     except Exception:
         app.logger.exception("Document open failed")
-        return render_template("error.html", message="Unable to open this document. Please try again."), 500
+        return render_template("error.html", error_title="Unable to open this document",
+                               message="Unable to open this document. Please try again.", filename=source.name,
+                               back_url=url_for('browse', root_index=root_index, relpath=parent_relpath(relpath))), 500
     if page_count < 1:
-        return render_template("error.html", message="This document has no viewable pages."), 415
+        return render_template("error.html", error_title="Unable to open this document",
+                               message="This document has no viewable pages.", filename=source.name,
+                               back_url=url_for('browse', root_index=root_index, relpath=parent_relpath(relpath))), 415
     return render_template(
         "document_viewer.html",
         root_index=root_index,
@@ -1577,7 +1588,9 @@ def text_viewer(root_index, relpath):
         raw = source.read_text(encoding="utf-8", errors="replace")
     except OSError:
         app.logger.exception("Text file read failed")
-        return render_template("error.html", message="Unable to read this text file. Please try again."), 500
+        return render_template("error.html", error_title="Unable to read this file",
+                               message="Unable to read this text file. Please try again.", filename=source.name,
+                               back_url=url_for('browse', root_index=root_index, relpath=parent_relpath(relpath))), 500
 
     return render_template(
         "text_viewer.html",
@@ -1603,8 +1616,14 @@ def video_detail(root_index, relpath):
     image_scheduler.submit(generation, 0, source, poster, 960)
     v = videos[0] if videos else {}
 
+    file_stat = source.stat()
+    rename_item = None
+    if cleanup_service.writes_enabled():
+        rename_item = dict(name=source.name, selection_token=cleanup_service.selection(active_profile(),
+                           dict(root_id=root_id(root), rel=relpath, size=file_stat.st_size,
+                                mtime=file_stat.st_mtime, version=None, duration=None)))
     return render_template(
-        "video.html",
+        "video.html", rename_item=rename_item,
         root_index=root_index, relpath=relpath, filename=source.name,
         parent_rel=parent_relpath(relpath),
         size=fmt_size(source.stat().st_size),

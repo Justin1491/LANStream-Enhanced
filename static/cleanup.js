@@ -111,6 +111,7 @@
       const nameCell = element('td', undefined, 'cleanup-name-cell');
       if (trash) nameCell.textContent = item.name;
       else { const link = element('a', item.name); link.href = item.url; nameCell.append(link); }
+      if (!trash && writes) { const rename = element('button', 'Rename', 'rename-file'); rename.type = 'button'; rename.disabled = working || loading; rename.setAttribute('aria-label', 'Rename ' + item.name); rename.onclick = () => window.LANStreamRename(item, () => { clearSelection(); return load(); }); nameCell.append(rename); }
       row.append(nameCell);
       const locationCell = element('div', undefined, 'cleanup-file-location');
       if (!trash) { const link = element('button', item.location, 'cleanup-location'); link.type = 'button'; link.title = 'Compare this folder in Cleanup'; link.onclick = () => { state.root = item.root_id; state.relative = item.parent ?? item.rel.split('/').slice(0,-1).join('/'); state.scope = $('cleanupRecursive').checked ? 'subtree' : 'folder'; changed(); }; locationCell.append(link); const browse = element('a', 'Open in Browse', 'cleanup-location'); browse.href = item.folder_url; locationCell.append(browse); }
@@ -196,7 +197,15 @@
     try { sessionStorage.removeItem('lanstream-cleanup-job'); } catch (_) {}
     return job;
   }
-  async function submit(action, rows) { return watch(await request('/api/cleanup/actions', {action,items:rows,operation_id:crypto.randomUUID()})); }
+  function operationId() {
+    // randomUUID requires HTTPS; LAN HTTP connections still support getRandomValues.
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-');
+  }
+  async function submit(action, rows) { return watch(await request('/api/cleanup/actions', {action,items:rows,operation_id:operationId()})); }
   function openConfirmation(title, description, rows, callback, danger = false) {
     lastFocus = document.activeElement; pendingConfirmation = callback;
     $('cleanupConfirmTitle').textContent = title; $('cleanupConfirmDescription').textContent = description;

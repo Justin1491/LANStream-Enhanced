@@ -16,6 +16,12 @@ Thumbnails start off and are independent of normal browsing. Enabling them loads
 
 Select individual files or **Select this page**. Selection is limited to the current comparison page and clears when you change groups, results, filters, sorting, location, or tab. The confirmation identifies actual files and original locations. Groups are recomputed after changes; a group disappears when fewer than two files remain. Partial failures remain visible with explanations. Trash has its own filename search so a group search does not hide a differently named copy after moving it.
 
+## Rename a file
+
+Use **Rename** beside a file in Cleanup or Browse (including Details), or on a video's detail page. Edit the filename before the fixed extension and choose **Save name**. For example, `holiday.mp4` becomes `Summer holiday.mp4`; `.mp4` stays unchanged. Renaming requires the same enabled Library Cleanup setting and password sign-in on Windows as other file changes. Files in Trash must be restored first.
+
+Renames stay in the same folder, never overwrite another file, and reject invalid names, changed files, and files currently in use by LANStream. Favorites and saved duration metadata follow the new name. Existing external links to the old filename need updating.
+
 ## Prepare durations
 
 **Prepare durations** reads videos in the chosen folder scope, including subfolders when selected, irrespective of filename, file-type, or group filters. Results are saved across restarts. Unknown durations display an em dash and sort last in both directions in All files. Duration grouping excludes unavailable values. Sorting, grouping, searching, or opening Cleanup never starts FFprobe. Opening a video normally also saves valid duration metadata from its existing probe.

@@ -10,7 +10,7 @@
   <title>{% block title %}LANStream{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 <header class="topbar">
   <div class="topbar-left">
     <a class="brand" href="{{ url_for('home') }}">LANStream</a>
@@ -20,6 +20,20 @@
   {% if session.get('authenticated') %}<a class="logout" href="{{ url_for('logout') }}">Log out</a>{% endif %}
 </header>
 <main class="page">{% block content %}{% endblock %}</main>
+{% if request.endpoint != 'login' %}
+<dialog id="renameDialog" aria-labelledby="renameTitle" aria-describedby="renameHint">
+<form id="renameForm">
+<h2 id="renameTitle">Rename file</h2>
+<p id="renameCurrent"></p>
+<label for="renameName">Filename</label>
+<div class="rename-name"><input id="renameName" type="text" required autocomplete="off"><span id="renameExtension"></span></div>
+<p id="renameHint" class="muted">The extension stays the same. Existing files are never overwritten.</p>
+<p id="renameStatus" role="status" aria-live="polite"></p>
+<div class="rename-actions"><button id="renameCancel" type="button">Cancel</button><button id="renameSave" type="submit">Save name</button></div>
+</form>
+</dialog>
+<script src="{{ url_for('static', filename='rename.js') }}" defer></script>
+{% endif %}
 <script src="{{ url_for('static', filename='favorite.js') }}" defer></script>
 <script src="{{ url_for('static', filename='activity.js') }}" defer></script>
 {% block scripts %}{% endblock %}

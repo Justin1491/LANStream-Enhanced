@@ -63,6 +63,140 @@ class CleanupRoutes(unittest.TestCase):
             time.sleep(.01)
         self.fail('cleanup job did not finish')
 
+    def rename(self, row, name):
+        response = self.post(dict(action='rename', items=[dict(selection_token=row['selection_token'], name=name)],
+                                  operation_id=str(uuid.uuid4())))
+        self.assertEqual(response.status_code, 202, response.get_data(as_text=True))
+        return self.wait_job(response.get_json())['results'][0]
+
+    def test_rename_preserves_extension_favorites_durations_and_new_urls(self):
+        from cleanup_jobs import fingerprint
+        source = self.root / 'sample clip.mp4'
+        self.index.save_duration(self.root, source.name, fingerprint(source), 42.5)
+        self.index.set_favorite('alice', self.root, source.name, 'video', source.name, True)
+        self.index.set_favorite('bob', self.root, source.name, 'video', source.name, True)
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='true'):
+            row = self.client.get('/api/cleanup/files').get_json()['items'][0]
+            result = self.rename(row, 'Summer.final 你好😀😀😀')
+            self.assertEqual(result['status'], 'renamed', result)
+            self.assertFalse(source.exists())
+            target = self.root / 'Summer.final 你好😀😀😀.mp4'
+            self.assertEqual(target.read_bytes(), b'fictional sample')
+            self.assertTrue(self.index.wait_for_idle())
+            rows = self.client.get('/api/cleanup/files').get_json()['items']
+            self.assertEqual([r['name'] for r in rows], [target.name])
+            self.assertEqual(rows[0]['duration'], 42.5)
+            for profile in ('alice', 'bob'):
+                favorite = self.index.favorites(profile, [self.root])['items'][0]
+                self.assertEqual(favorite['rel'], target.name)
+            self.assertIn('Summer.final', rows[0]['url'])
+            self.assertEqual(self.rename(row, 'stale')['status'], 'error')
+
+    def test_rename_no_overwrite_case_only_and_unchanged_name(self):
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='true'):
+            row = self.client.get('/api/cleanup/files').get_json()['items'][0]
+            other = self.root / 'existing.mp4'
+            other.write_bytes(b'keep destination')
+            self.assertEqual(self.rename(row, 'existing')['status'], 'error')
+            self.assertEqual(other.read_bytes(), b'keep destination')
+            self.assertEqual(self.rename(row, 'sample clip')['status'], 'renamed')
+            self.assertEqual(self.rename(row, 'Sample Clip')['status'], 'renamed')
+            self.assertIn('Sample Clip.mp4', [p.name for p in self.root.iterdir()])
+
+    def test_rename_rejects_invalid_names_changed_and_busy_files(self):
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='true'):
+            row = self.client.get('/api/cleanup/files').get_json()['items'][0]
+            for name in ('', ' ', '.', '..', '../outside', 'bad/name', 'bad\\name', 'bad:name',
+                         'bad?name', 'bad*name', 'bad"name', 'bad<name', 'bad|name', 'bad\nname',
+                         'trailing.', 'trailing ', 'CON', 'NUL.txt', 'x' * 256):
+                with self.subTest(name=name):
+                    self.assertEqual(self.rename(row, name)['status'], 'error')
+            with patch.object(self.service.trash, 'busy', return_value=True):
+                self.assertEqual(self.rename(row, 'busy')['status'], 'error')
+            (self.root / row['rel']).write_bytes(b'changed after selection')
+            self.assertEqual(self.rename(row, 'changed')['status'], 'error')
+            self.assertTrue((self.root / row['rel']).exists())
+
+    def test_rename_updates_nested_root_aliases_without_waiting_for_a_scan(self):
+        from cleanup_jobs import fingerprint
+        from directory_index import root_id
+        folder = self.root / 'MixedCase'
+        folder.mkdir()
+        source = folder / 'nested.mp4'
+        source.write_bytes(b'fictional nested file')
+        self.index.listing(self.root, 'MixedCase')
+        self.index.listing(folder)
+        self.assertTrue(self.index.wait_for_idle())
+        before = fingerprint(source)
+        for root, rel in ((self.root, 'MixedCase/nested.mp4'), (folder, 'nested.mp4')):
+            self.index.set_favorite('alice', root, rel, 'video', source.name, True)
+            self.index.save_duration(root, rel, before, 72.5)
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='true'):
+            row = next(r for r in self.client.get('/api/cleanup/files').get_json()['items'] if r['name']=='nested.mp4')
+            # Hold scans to exercise the immediate cached listing during a slow SMB refresh.
+            with patch.object(self.index, '_schedule'):
+                result = self.rename(row, 'Nested New')
+                self.assertEqual(result['status'], 'renamed', result)
+                for root, rel in ((self.root, 'MixedCase/Nested New.mp4'), (folder, 'Nested New.mp4')):
+                    rows = self.index.cleanup([root])['items']
+                    item = next(r for r in rows if r['name']=='Nested New.mp4')
+                    self.assertEqual(item['rel'], rel)
+                    self.assertEqual(item['duration'], 72.5)
+                    favorite = self.index.favorites('alice', [root])['items'][0]
+                    self.assertEqual(favorite['rel'], rel)
+                    self.assertEqual(favorite['root_id'], root_id(root))
+
+    def test_rename_reuses_a_trashed_name_without_hiding_the_new_file(self):
+        destination = self.root / 'previous.mp4'
+        destination.write_bytes(b'original destination to keep in Trash')
+        self.index.listing(self.root, refresh=True)
+        self.assertTrue(self.index.wait_for_idle())
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='true'):
+            rows = self.client.get('/api/cleanup/files').get_json()['items']
+            previous = next(r for r in rows if r['name']=='previous.mp4')
+            source = next(r for r in rows if r['name']=='sample clip.mp4')
+            preview = self.wait_job(self.post(dict(action='preview_move',items=[{'selection_token':previous['selection_token']}],operation_id=str(uuid.uuid4()))).get_json())
+            moved = self.wait_job(self.post(dict(action='move',items=[{'confirmation_token':preview['results'][0]['confirmation_token']}],operation_id=str(uuid.uuid4()))).get_json())
+            self.assertEqual(moved['results'][0]['status'],'moved')
+            self.assertTrue(self.index.wait_for_idle())
+            with patch.object(self.index, '_schedule'):
+                result = self.rename(source, 'previous')
+                self.assertEqual(result['status'],'renamed',result)
+                self.assertEqual([r['name'] for r in self.client.get('/api/cleanup/files').get_json()['items']],['previous.mp4'])
+            self.assertEqual(destination.read_bytes(), b'fictional sample')
+            trashed = self.client.get('/api/cleanup/trash').get_json()['items'][0]
+            payload = self.root / '.lanstream-trash' / trashed['item_id'] / 'payload'
+            self.assertEqual(payload.read_bytes(), b'original destination to keep in Trash')
+
+    def test_rename_access_tokens_csrf_and_write_setting(self):
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='true'):
+            row = self.client.get('/api/cleanup/files').get_json()['items'][0]
+            payload = dict(action='rename', items=[dict(selection_token=row['selection_token'],name='new')], operation_id=str(uuid.uuid4()))
+            self.assertEqual(self.client.post('/api/cleanup/actions',json=payload).status_code,403)
+            for items in ([dict(selection_token='tampered',name='new')], payload['items'] * 2,
+                          [dict(selection_token=row['selection_token'], name=5)]):
+                self.assertEqual(self.post(payload | {'items': items}).status_code,400)
+            other = self.server.app.test_client()
+            other.post('/login',data={'password':'bob'})
+            other.get('/cleanup')
+            with other.session_transaction() as session:
+                headers={'X-LANStream-CSRF':session['csrf_token']}
+            self.assertEqual(other.post('/api/cleanup/actions',json=payload,headers=headers).status_code,400)
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='false'):
+            self.assertEqual(self.post(payload).status_code,403)
+            self.assertNotIn('selection_token', self.client.get('/api/browse/0/').get_json()['items'][0])
+
+    def test_detail_and_browse_offer_rename_without_changing_existing_selection(self):
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='true'), \
+                patch.object(self.server, 'probe', return_value={'streams':[], 'format':{}}), \
+                patch.object(self.server.image_scheduler, 'submit'):
+            response = self.client.get('/video/0/sample%20clip.mp4')
+            self.assertEqual(response.status_code,200)
+            self.assertIn(b'data-rename-file', response.data)
+            row = next(r for r in self.client.get('/api/browse/0/?details=1').get_json()['items'] if r['kind']=='video')
+            self.assertIn('selection_token',row)
+            self.assertEqual(self.rename(row, 'from Details')['status'], 'renamed')
+
     def test_page_and_cached_table_without_filesystem_or_probe(self):
         self.assertEqual(self.client.get('/cleanup').status_code, 200)
         with patch('os.scandir', side_effect=AssertionError('enumerated media')), \

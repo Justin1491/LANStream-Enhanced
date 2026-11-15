@@ -8,6 +8,12 @@
   const scope = document.getElementById('searchScope'), direction = document.getElementById('sortDirection');
   const density = document.getElementById('gridDensity'), previous = document.getElementById('previousPage'), next = document.getElementById('nextPage');
   const csrf = document.querySelector('meta[name="lanstream-csrf"]').content;
+  const tools = document.getElementById('explorerTools');
+  if (tools) {
+    const mobile = matchMedia('(max-width:700px)');
+    const toolsLayout = () => { tools.open = !mobile.matches; };
+    toolsLayout(); mobile.addEventListener('change', toolsLayout);
+  }
   let controller, polling, debounce, sequence = 0, observer, stopped = false, state = {};
   let thumbnailImages = new Map(), thumbnailWork, viewMode;
   function resetThumbnails() {
@@ -142,17 +148,27 @@
         if (!image.complete || !image.naturalWidth) observer.observe(preview);
         preview.append(image); nextImages.set(key, image);
       }
-      const label = element('span', 'item-label'); label.append(element('span', 'item-name', item.name));
+      const label = element('div', 'item-label'); label.append(element('span', 'item-name', item.name));
       if (explorer.dataset.mode !== 'browse') label.append(element('span', 'item-location', item.location));
-      link.append(preview, label, element('span', 'item-size', item.kind === 'folder' ? '—' : size(item.size)), element('span', 'item-duration', item.kind === 'video' ? duration(item.duration) : '—'), element('span', 'item-date', item.mtime ? new Date(item.mtime * 1000).toLocaleString() : '—'), element('span', 'item-kind', item.kind));
+      const modified = item.mtime == null ? '—' : new Date(item.mtime * 1000).toLocaleString();
+      if (explorer.dataset.mode === 'favorites' && item.kind === 'video') {
+        const metadata = element('dl', 'item-favorite-meta');
+        for (const [name, value] of [['Size', size(item.size)], ['Duration', duration(item.duration)], ['Modified', modified]]) metadata.append(element('dt', '', name), element('dd', '', value));
+        label.append(metadata);
+      }
+      link.append(preview, label, element('span', 'item-size', item.kind === 'folder' ? '—' : size(item.size)), element('span', 'item-duration', item.kind === 'video' ? duration(item.duration) : '—'), element('span', 'item-date', modified), element('span', 'item-kind', item.kind));
       row.append(link); const actions = element('div', 'item-actions');
       if (['folder', 'video'].includes(item.kind)) {
         const favorite = element('button', 'favorite-button', item.favorite ? '★' : '☆'); favorite.type = 'button'; favorite.setAttribute('aria-label', 'Favorite ' + item.name); favorite.setAttribute('aria-pressed', item.favorite);
         favorite.onclick = async () => {
           favorite.disabled = true;
-          try { await write('/api/favorites', {root_index: item.root_index, rel: item.rel, kind: item.kind, enabled: !item.favorite}); item.favorite = !item.favorite; favorite.textContent = item.favorite ? '★' : '☆'; favorite.setAttribute('aria-pressed', item.favorite); }
+          try { await write('/api/favorites', {root_index: item.root_index, rel: item.rel, kind: item.kind, enabled: !item.favorite}); item.favorite = !item.favorite; favorite.textContent = item.favorite ? '★' : '☆'; favorite.setAttribute('aria-pressed', item.favorite); if (explorer.dataset.mode === 'favorites' && !item.favorite) await load(false); }
           catch (error) { status.textContent = error.message; } finally { favorite.disabled = false; }
         }; actions.append(favorite);
+      }
+      if (item.selection_token && item.kind !== 'folder') {
+        const rename = element('button', 'rename-file', 'Rename'); rename.type = 'button'; rename.setAttribute('aria-label', 'Rename ' + item.name);
+        rename.onclick = () => window.LANStreamRename(item, () => load(false)); actions.append(rename);
       }
       if (explorer.dataset.mode !== 'browse') { const folder = element('a', 'item-folder-link', 'Open folder'); folder.href = item.folder_url; actions.append(folder); }
       row.append(actions); fragment.append(row);
@@ -161,7 +177,25 @@
     const missingDurations = document.getElementById('missingDurations');
     if (missingDurations) missingDurations.hidden = state.sort !== 'duration' || !result.items.some(item => item.kind === 'video' && item.duration == null);
     const scanning = result.state === 'loading';
-    status.textContent = scanning ? 'Reading this folder for the first time… SMB enumeration may take a while.' : result.error ? result.error + (result.version ? ' Showing the last cached snapshot.' : '') : result.state === 'stale' ? result.total.toLocaleString() + ' items · cached snapshot, refreshing in the background.' : result.total ? result.total.toLocaleString() + ' items' : 'No matching folders or supported files.';
+    status.textContent = scanning ? 'Reading this folder for the first time… SMB enumeration may take a while.' : result.error ? result.error + (result.version ? ' Showing the last cached snapshot.' : '') : result.state === 'stale' ? result.total.toLocaleString() + ' items · cached snapshot, refreshing in the background.' : result.total ? result.total.toLocaleString() + (result.total === 1 ? ' item' : ' items') : 'No matching folders or supported files.';
+    const favoritesEmpty = document.getElementById('favoritesEmpty');
+    if (favoritesEmpty) {
+      const empty = !scanning && !result.error && result.total === 0, filtered = state.file_type !== 'all';
+      favoritesEmpty.hidden = !empty;
+      document.getElementById('favoritesEmptyTitle').textContent = filtered ? 'No matching favorites' : 'No favorites yet';
+      document.getElementById('favoritesEmptyDescription').textContent = filtered ? 'Choose All to see favorites of every file type.' : 'Tap the star beside a video or folder to keep it here.';
+      document.getElementById('favoritesBrowse').hidden = filtered;
+      document.getElementById('clearFavoriteFilter').hidden = !filtered;
+      document.getElementById('explorerPagination').hidden = empty;
+      if (empty) status.textContent = '';
+    }
+    const searchLocation = document.getElementById('searchContextLocation');
+    if (searchLocation) {
+      const context = result.scope_context;
+      document.getElementById('searchContextLabel').textContent = context ? context.recursive ? 'Searching this folder and its subfolders' : 'Searching this folder' : 'Searching indexed libraries';
+      searchLocation.textContent = context ? [context.root_label, context.relative].filter(Boolean).join(' / ') : 'All accessible indexed roots';
+      document.getElementById('searchContextDetails').textContent = context ? context.recursive ? 'Subfolders included' : 'Subfolders excluded' : '';
+    }
     if (result.updated_at && !scanning) status.textContent += ' · Updated ' + new Date(result.updated_at * 1000).toLocaleString();
     previous.disabled = state.page <= 1; next.disabled = state.page >= result.pages;
     document.getElementById('pageLabel').textContent = 'Page ' + state.page + ' of ' + Math.max(1, result.pages);
@@ -174,6 +208,8 @@
     const params = new URLSearchParams(state); if (historyUpdate) history.pushState(null, '', location.pathname + '?' + params);
     if (viewMode === 'details') params.set('details', '1');
     status.textContent = 'Loading cached results…';
+    const searchLocation = document.getElementById('searchContextLocation');
+    if (searchLocation) { searchLocation.textContent = 'Checking search location…'; document.getElementById('searchContextDetails').textContent = ''; }
     try { const response = await fetch(explorer.dataset.api + '?' + params, {signal: controller.signal, cache: 'no-store', headers: background ? {'X-LANStream-Poll':'1'} : {}});
       if (!response.ok) throw Error(response.status === 401 ? 'Sign in again to continue.' : 'Unable to load this folder. Check access and try again.');
       const result = await response.json(); if (current === sequence) render(result);
@@ -183,6 +219,8 @@
   if (query) query.oninput = () => { clearTimeout(debounce); state.q = query.value; debounce = setTimeout(changed, 250); };
   if (sort) sort.onchange = () => { state.sort = sort.value; changed(); };
   fileType.onchange = () => { state.file_type = fileType.value; changed(); };
+  const clearFavoriteFilter = document.getElementById('clearFavoriteFilter');
+  if (clearFavoriteFilter) clearFavoriteFilter.onclick = () => { state.file_type = fileType.value = 'all'; changed(); };
   if (scope) scope.onchange = () => { state.scope = scope.value; changed(); };
   if (direction) direction.onclick = () => { state.direction = state.direction === 'asc' ? 'desc' : 'asc'; direction.textContent = state.direction === 'desc' ? 'Descending' : 'Ascending'; changed(); };
   previous.onclick = () => { state.page--; load(); window.scrollTo(0, 0); }; next.onclick = () => { state.page++; load(); window.scrollTo(0, 0); };

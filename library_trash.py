@@ -140,7 +140,7 @@ def _rename(handle, destination):
     name = _native(destination)
     class Rename(ctypes.Structure):
         _fields_ = [('ReplaceIfExists', wintypes.BOOL), ('RootDirectory', wintypes.HANDLE),
-                    ('FileNameLength', wintypes.DWORD), ('FileName', ctypes.c_wchar * (len(name) + 1))]
+                    ('FileNameLength', wintypes.DWORD), ('FileName', ctypes.c_wchar * (len(name.encode('utf-16-le')) // 2 + 1))]
     value = Rename(False, None, len(name.encode('utf-16-le')), name)
     if not _win.SetFileInformationByHandle(handle, 3, ctypes.byref(value), ctypes.sizeof(value)):
         raise ctypes.WinError(ctypes.get_last_error())
@@ -211,7 +211,7 @@ class TrashManager:
 
     def submit(self, profile_id, action, items, operation_id):
         _uuid(operation_id)
-        if action not in ('preview_move', 'move', 'preview_restore', 'restore', 'preview_purge', 'purge', 'recover'):
+        if action not in ('preview_move', 'move', 'preview_restore', 'restore', 'preview_purge', 'purge', 'recover', 'rename'):
             raise ValueError('Invalid action')
         if not isinstance(items, list) or not 1 <= len(items) <= 100 or any(not isinstance(x, dict) for x in items):
             raise ValueError('Select between 1 and 100 files')
@@ -442,6 +442,8 @@ class TrashManager:
     def _execute(self, profile, action, item, operation):
         if not self.windows or os.name != 'nt':
             raise Conflict('Trash mutations require Windows')
+        if action == 'rename':
+            return self._rename_file(profile, item)
         if action.startswith('preview_'):
             return self._preview(profile, action[8:], item)
         if action == 'recover':
@@ -475,6 +477,41 @@ class TrashManager:
             if manifest['fingerprint'] != row['fingerprint'] or manifest['state'] != 'trashed':
                 raise Conflict('Trash item needs attention')
             return self._finish(row | {'profile': profile}, root, action)
+
+    def _rename_file(self, profile, item):
+        root = self._authorized(profile, item)
+        relative = _relative(item['rel'])
+        stem = item.get('name')
+        if (not isinstance(stem, str) or not stem.strip() or stem in ('.', '..')
+                or stem.endswith(('.', ' ')) or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in stem)):
+            raise Conflict('Enter a valid filename without an extension or folder path')
+        name = stem + Path(relative).suffix
+        if len(name.encode('utf-16-le')) > 510:
+            raise Conflict('Filename is too long')
+        destination_rel = str(Path(relative).with_name(name)).replace('\\', '/')
+        _relative(destination_rel)
+        self._authorized(profile, dict(root_id=item['root_id'], rel=destination_rel))
+        source, destination = root / relative, root / destination_rel
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(self._claim(source))
+            if os.path.normcase(str(source)) != os.path.normcase(str(destination)):
+                stack.enter_context(self._claim(destination))
+            stack.enter_context(self._root_lock(root))
+            source = safe_regular_path(root, relative)
+            stack.enter_context(_directories(source.parent))
+            handle = stack.enter_context(_handle(source))
+            before = fingerprint(source)
+            if before['size'] != item['size'] or before['mtime'] != item['mtime']:
+                raise Conflict('Selected file changed; refresh and try again')
+            if source.name != name:
+                _rename(handle, destination)
+                after = fingerprint(destination)
+                try:
+                    self.changed(root, relative, False, renamed_to=destination_rel,
+                                 before=before, fingerprint=after)
+                except Exception:
+                    raise Conflict('File renamed, but saved listings could not update. Refresh the folder.') from None
+        return dict(status='renamed', root_id=item['root_id'], rel=destination_rel, name=name)
 
     def _move(self, row, root, operation):
         source = safe_regular_path(root, row['rel'])

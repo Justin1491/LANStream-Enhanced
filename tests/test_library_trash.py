@@ -71,6 +71,30 @@ class TrashTests(unittest.TestCase):
             index.hide_file(root, rel, hidden, **kwargs)
         return changed
 
+    def test_rename_rechecks_destination_authorization_and_skips_links(self):
+        selection = self.selected() | {'name': 'blocked'}
+        original = self.manager.resolve
+        def resolve(profile, rid, rel):
+            if rel == 'blocked.mp4':
+                raise PermissionError()
+            return original(profile, rid, rel)
+        self.manager.resolve = resolve
+        self.assertEqual(self.run_job('rename', [selection])['results'][0]['status'], 'error')
+        self.assertTrue(self.path.exists())
+        with patch('library_trash.safe_regular_path', side_effect=__import__('library_trash').Conflict('Unsafe path')):
+            result = self.run_job('rename', [self.selected() | {'name': 'safe'}])['results'][0]
+            self.assertEqual(result['status'], 'error')
+        self.assertTrue(self.path.exists())
+
+    def test_rename_operation_replay_does_not_rename_twice(self):
+        operation = str(uuid.uuid4())
+        item = self.selected() | {'name': 'renamed'}
+        job = self.run_job('rename', [item], operation=operation)
+        self.assertEqual(job['results'][0]['status'], 'renamed', job)
+        replay = self.run_job('rename', [item], operation=operation)
+        self.assertEqual(replay['job_id'], job['job_id'])
+        self.assertEqual((self.root / 'renamed.mp4').read_bytes(), b'fictional media only')
+
     def test_saved_duration_forwarded_only_for_fresh_successful_restore(self):
         token = self.preview(item=self.selected() | {'duration': 123.5})
         item = self.run_job('move', [token])['results'][0]['item_id']

@@ -220,6 +220,9 @@ class ViewerRoutes(unittest.TestCase):
                     self.assertLess(response.status_code, 500)
                     self.assertIn('text/html', response.content_type)
                     self.assertNotIn(str(self.root).encode(), response.data)
+                    if route == 'document':
+                        self.assertIn(b'Back to folder', response.data)
+                        self.assertIn(b'href="/browse/0/"', response.data)
         response = self.fetch('image-file', 'corrupt_image')
         self.assertEqual(response.status_code, 415)
         self.assertNotIn(str(self.root).encode(), response.data)
@@ -230,6 +233,16 @@ class ViewerRoutes(unittest.TestCase):
         self.assertEqual(response.status_code, 415)
         self.assertIn(b'Unable to read this page', response.data)
         self.assertNotIn(str(self.root).encode(), response.data)
+
+    def test_error_return_ignores_external_referrers_and_unauthorized_paths(self):
+        response = self.client.get('/image/99/missing.png', headers={'Referer': 'https://outside.example/return'})
+        self.assertEqual(response.status_code, 404)
+        self.assertIn(b'Media roots', response.data)
+        self.assertNotIn(b'outside.example', response.data)
+        denied = self.fetch('document', 'private_pdf')
+        self.assertEqual(denied.status_code, 404)
+        self.assertNotIn(b'Back to folder', denied.data)
+        self.assertNotIn(str(self.root).encode(), denied.data)
 
     def test_missing_cbr_backend_explains_dependency_without_private_paths(self):
         with patch.object(self.server, 'SEVEN_ZIP', None):

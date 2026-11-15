@@ -26,7 +26,7 @@ function page({search='', roots=1, fetchHook}={}) {
     document:{getElementById:id=>elements[id],querySelector:()=>({content:'csrf'}),querySelectorAll:()=>[],createElement:()=>new Element(),createDocumentFragment:()=>new Element()},
     window:{addEventListener:(type,fn)=>events[type]=fn}, location,
     history:Object.fromEntries(['replaceState','pushState'].map(method=>[method,(_state,_title,url)=>{historyCalls.push({method,url});location.search=url.slice(url.indexOf('?'));}])), localStorage:{getItem:()=>null,setItem(){}},
-    URLSearchParams,URL,AbortController,crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
+    URLSearchParams,URL,AbortController,crypto:{getRandomValues:array=>require('node:crypto').randomFillSync(array)},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){},
     IntersectionObserver:class{observe(){}disconnect(){}},
     fetch:async(url,options={})=>{calls.push({url,options});const result=fetchHook?await fetchHook(url,options,()=>response(url)):response(url);return{ok:true,json:async()=>result};},
@@ -227,6 +227,8 @@ test('moving signed selections previews and confirms before mutation then advanc
   assert.equal(actions.length,1);assert.equal(actions[0].action,'preview_move');assert.deepEqual(actions[0].items,[{selection_token:'signed'}]);assert.equal(moved,false);
   assert.equal(p.elements.cleanupConfirm.open,true);await p.elements.cleanupConfirmAction.onclick();await flush();
   assert.equal(actions[1].action,'move');assert.deepEqual(actions[1].items,[{confirmation_token:'confirmation'}]);
+  for (const action of actions) assert.match(action.operation_id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(actions[0].operation_id,actions[1].operation_id);
   assert.equal(query(p.calls.filter(c=>c.url.startsWith('/api/cleanup/files')).at(-1)).get('group_key'),'20');assert.equal(p.elements.moveCleanup.disabled,true);
 });
 
@@ -238,4 +240,33 @@ test('member and group pagination use separate page values and clear selected fi
   p.elements.cleanupGroupNext.onclick();await flush();
   assert.equal(query(p.calls.filter(c=>c.url.startsWith('/api/cleanup/groups')).at(-1)).get('page'),'2');
   assert.equal(query(p.calls.filter(c=>c.url.startsWith('/api/cleanup/files')).at(-1)).get('page'),'1');
+});
+
+for (const action of ['restore','purge']) test(action + ' previews and confirms over HTTP without randomUUID',async()=>{
+  const actions=[];
+  const p=page({search:'?tab=trash',fetchHook:(url,options,next)=>{
+    if(url.startsWith('/api/cleanup/trash')) {const result=fileResult();result.items[0].item_id='trash-item';return result;}
+    if(url==='/api/cleanup/actions') {const body=JSON.parse(options.body);actions.push(body);return {job_id:'job',state:'complete',results:[{status:body.action.startsWith('preview_')?'ready':'done',root_id:'root_1',rel:'clip.mp4',name:'clip.mp4',confirmation_token:'confirmation'}]};}
+    return next();
+  }});await flush();
+  p.elements.selectCleanupPage.checked=true;p.elements.selectCleanupPage.onchange();await p.elements[action+'Cleanup'].onclick();
+  assert.equal(actions.length,1,p.elements.cleanupActionStatus.textContent);
+  assert.equal(actions[0].action,'preview_'+action);assert.deepEqual(actions[0].items,[{item_id:'trash-item'}]);
+  assert.equal(p.elements.cleanupConfirm.open,true);await p.elements.cleanupConfirmAction.onclick();await flush();
+  assert.equal(actions[1].action,action);assert.deepEqual(actions[1].items,[{confirmation_token:'confirmation'}]);
+  for (const request of actions) assert.match(request.operation_id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(actions[0].operation_id,actions[1].operation_id);
+});
+
+test('Trash recovery submits a valid operation ID over HTTP without randomUUID',async()=>{
+  const actions=[];
+  const p=page({search:'?tab=trash',fetchHook:(url,options,next)=>{
+    if(url==='/api/cleanup/actions') {actions.push(JSON.parse(options.body));return {job_id:'job',state:'complete',results:[]};}
+    return next();
+  }});await flush();
+  p.elements.recoverTrash.onclick();assert.equal(actions.length,0);assert.equal(p.elements.cleanupConfirm.open,true);
+  await p.elements.cleanupConfirmAction.onclick();await flush();
+  assert.equal(actions.length,1,p.elements.cleanupActionStatus.textContent);
+  assert.equal(actions[0].action,'recover');assert.deepEqual(actions[0].items,[{root_id:'root_1',rel:''}]);
+  assert.match(actions[0].operation_id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });

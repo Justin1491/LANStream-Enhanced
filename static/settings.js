@@ -13,8 +13,18 @@
   function render(data) {
     const t = data.thumbnails || {}, s = data.scheduler || {}, storage = data.storage || {}, update = data.updates || {};
     if (!busy) $('automaticThumbnails').checked = !!t.enabled;
-    set('thumbnailStatus', `Status: ${t.state || 'unknown'} · Checked: ${t.checked || 0} · Ready: ${t.ready || 0} · Failed: ${t.failed || 0}${t.error ? ' · ' + t.error : ''}`);
-    set('schedulerStatus', `Thumbnail queue: ${s.pending || 0} pending, ${s.active || 0} active, ${s.failed || 0} failed${s.paused ? ' · paused' : ''}`);
+    const states = {
+      disabled: ['Automatic preparation is off', 'Enable it to prepare thumbnails when LANStream is idle.'],
+      waiting: ['Waiting for an idle opportunity', s.paused ? 'Thumbnail work is paused or playback is active.' : 'Preparation starts after 60 seconds without users, when playback and other thumbnail work allow.'],
+      preparing: ['Preparing thumbnails', 'Browsing and playback take priority.'],
+      complete: ['Automatic preparation pass complete', 'Indexed libraries will be checked again while LANStream is idle.'],
+      error: ['Automatic preparation needs attention', 'The preparation pass could not finish.']
+    };
+    const [state, reason] = states[t.state] || ['Automatic preparation status unavailable', 'Waiting for a status update.'];
+    set('thumbnailStatus', state);
+    set('thumbnailReason', t.error ? `${reason} ${t.error}` : reason);
+    set('automaticCounts', `Automatic preparation this pass: ${t.checked || 0} checked · ${t.ready || 0} ready · ${t.failed || 0} failed`);
+    set('schedulerStatus', `Thumbnail requests: ${s.pending || 0} pending · ${s.active || 0} active · ${s.failed || 0} failed${s.paused ? ' · paused or playback active' : ''}`);
     const index = $('indexingStatus'); index.replaceChildren();
     if (!data.indexing || !data.indexing.length) index.textContent = 'No indexing activity for accessible libraries.';
     else {
@@ -29,11 +39,16 @@
     $('scanStorage').disabled = !!storage.running;
     set('storageStatus', storage.running ? 'Measuring storage…' : storage.error || (!storage.scanned ? 'Storage has not been measured yet.' : storage.partial ? 'Measurement is incomplete; some files could not be counted or the scan reached its limit.' : 'Measurement complete.'));
     const details = $('storageDetails'); details.replaceChildren();
-    if (storage.scanned) for (const [title, entries] of [['Cache', storage.cache], ['Application files', storage.system]]) {
+    const totals = $('storageTotals'); totals.replaceChildren();
+    $('technicalStorage').hidden = !storage.scanned;
+    if (storage.scanned) for (const [title, entries] of [['Cache', storage.cache], ['Application', storage.system]]) {
+      const group = document.createElement('div');
+      const label = document.createElement('dt'); label.textContent = title; group.appendChild(label);
+      const value = document.createElement('dd'); value.textContent = bytes(Object.values(entries || {}).reduce((a, b) => a + b, 0)); group.appendChild(value);
+      totals.appendChild(group);
       const heading = document.createElement('h3'); heading.textContent = title; details.appendChild(heading);
       const list = document.createElement('ul');
       for (const [name, value] of Object.entries(entries || {})) { const li = document.createElement('li'); li.textContent = `${name}: ${bytes(value)}`; list.appendChild(li); }
-      const total = document.createElement('li'); total.textContent = `Total: ${bytes(Object.values(entries || {}).reduce((a, b) => a + b, 0))}`; list.appendChild(total);
       details.appendChild(list);
     }
     $('checkUpdates').disabled = !!update.running;
