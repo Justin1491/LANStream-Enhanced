@@ -30,6 +30,7 @@ transcoder=auto
 directory_cache_ttl=300
 directory_scan_timeout=30
 automatic_indexing=true
+automatic_thumbnails=true
 thumbnail_workers=2
 low_bandwidth_resolution=1280x720
 low_bandwidth_bitrate=3M
@@ -135,8 +136,8 @@ work, or refreshes the entire library after a pass has finished. These controls
 apply to the library root even when opened inside a subfolder. Automatic
 indexing resumes after a server restart when enabled, including previously paused tasks.
 Browsing remains available while discovery runs. Offline failures retain the
-last good snapshots and are retried on a later pass. No mass thumbnail
-generation starts automatically.
+last good snapshots and are retried on a later pass. Automatic thumbnail
+preparation is a separate idle task described below.
 
 The star saves videos and folders. Stars appear in all views, search, Favorites,
 video details and the player. Favorites persist in SQLite by profile/root/path,
@@ -181,6 +182,31 @@ folder can be prepared at a time. Preparation stops on application shutdown;
 start it again to continue using the images already cached. Keep the cache on
 local storage. On an N100, check playback and NAS load; select one worker if
 two compete with streaming. Existing explicit worker settings are retained.
+
+Automatic preparation is enabled by default (`automatic_thumbnails=true`).
+After 60 seconds without LANStream use, it prepares indexed libraries and
+subfolders one file at a time, below interactive and manual work. Visible
+pages report that someone is reading; buffered video also reports activity
+when its tab is hidden. Status polls alone do not prevent idle work. New
+activity cancels automatic video extraction, which has a shared 30-second
+probe/extraction budget. A nonvideo decode or filesystem operation already
+running can finish before pausing. Completed JPEGs are retained across restarts;
+the next pass skips fresh cached files. Completed passes are rechecked after
+five minutes. Automatic preparation uses only indexed files; with automatic
+indexing disabled it prepares only snapshots already discovered.
+
+Open **Settings** in the navigation to see preparation and directory indexing
+status or enable/disable automatic preparation immediately. This switch is
+saved to config.txt; other settings still follow their documented restart rules.
+**Measure storage** scans local cache/application files in the background,
+including database WAL/SHM companions and bundled tools. Library files,
+symlinks/junctions, development environments and build artifacts are excluded.
+Sizes are logical file bytes, may change while measured, and are marked
+incomplete if a scan cannot read everything or reaches its time/entry limit.
+External installation backups and media Trash are not included.
+**Check for updates** compares installed build identity with the latest source
+revision on GitHub; it never installs an update or assumes a differing revision
+is newer. Missing build identity and network failures are shown explicitly.
 
 Media roots are read-only. The database, thumbnails and crawl frontier reside
 under the local cache. Symlinks, Windows junctions and reparse entries are

@@ -44,6 +44,56 @@ class ImageSchedulerTests(unittest.TestCase):
             time.sleep(.01)
         self.fail('Thumbnail preparation did not finish')
 
+    def test_automatic_lane_runs_only_one_and_rechecks_idle_before_selection(self):
+        started, release = threading.Event(), threading.Event()
+        idle, seen = [True], []
+        def generate(source, output, *args):
+            seen.append(source.name)
+            started.set()
+            release.wait(2)
+            output.write_text('image')
+        scheduler = self.scheduler(generate)
+        scheduler.set_automatic_eligibility(lambda: idle[0])
+        self.submit(scheduler, 'one', 30)
+        self.assertTrue(started.wait(1))
+        self.submit(scheduler, 'two', 30)
+        time.sleep(.05)
+        self.assertEqual(seen, ['one'])
+        idle[0] = False
+        release.set()
+        time.sleep(.1)
+        self.assertEqual(seen, ['one'])
+        self.assertEqual(scheduler.status()['pending'], 1)
+        idle[0] = True
+        self.assertTrue(scheduler.wait_for_idle(2))
+        self.assertEqual(seen, ['one', 'two'])
+
+    def test_manual_work_preempts_active_and_evicts_queued_automatic(self):
+        started, cancelled, release = threading.Event(), threading.Event(), threading.Event()
+        def generate(source, output, width, generation, scheduler):
+            if source.name == 'active':
+                self.assertTrue(scheduler.is_automatic(output))
+                started.set()
+                release.wait(2)
+                if not scheduler.is_current(source, output):
+                    cancelled.set()
+                    return
+            output.write_text('image')
+        scheduler = self.scheduler(generate, workers=1, max_pending=2)
+        scheduler.set_automatic_eligibility(lambda: True)
+        active = self.paths('active')
+        scheduler.submit(0, 30, *active, 360)
+        self.assertTrue(started.wait(1))
+        queued = self.paths('queued')
+        self.assertTrue(scheduler.submit(0, 30, *queued, 360))
+        self.assertTrue(self.submit(scheduler, 'manual', 20))
+        release.set()
+        self.assertTrue(scheduler.wait_for_idle(2))
+        self.assertTrue(cancelled.is_set())
+        self.assertFalse(scheduler.failed(0, active[1]))
+        self.assertFalse(queued[1].exists())
+        self.assertTrue((self.root / 'manual.jpg').exists())
+
     def test_default_workers_generate_two_images_concurrently(self):
         both_started, release = threading.Event(), threading.Event()
         started = []

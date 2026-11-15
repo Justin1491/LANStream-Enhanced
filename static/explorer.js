@@ -174,7 +174,7 @@
     const params = new URLSearchParams(state); if (historyUpdate) history.pushState(null, '', location.pathname + '?' + params);
     if (viewMode === 'details') params.set('details', '1');
     status.textContent = 'Loading cached results…';
-    try { const response = await fetch(explorer.dataset.api + '?' + params, {signal: controller.signal, cache: 'no-store'});
+    try { const response = await fetch(explorer.dataset.api + '?' + params, {signal: controller.signal, cache: 'no-store', headers: background ? {'X-LANStream-Poll':'1'} : {}});
       if (!response.ok) throw Error(response.status === 401 ? 'Sign in again to continue.' : 'Unable to load this folder. Check access and try again.');
       const result = await response.json(); if (current === sequence) render(result);
     } catch (error) { if (error.name !== 'AbortError' && current === sequence) status.textContent = error.message; }

@@ -19,6 +19,9 @@ class LauncherTests(unittest.TestCase):
                                             trash=SimpleNamespace(close=lambda **kwargs: None)),
             hls_streams=SimpleNamespace(close=lambda: None),
             image_scheduler=SimpleNamespace(close=lambda **kwargs: None),
+            automatic_thumbnails=SimpleNamespace(close=lambda: None),
+            storage_status=SimpleNamespace(close=lambda: None),
+            update_status=SimpleNamespace(close=lambda: None),
         )
 
     def test_exit_unblocks_an_http_worker_waiting_for_a_slow_client(self):

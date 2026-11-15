@@ -16,11 +16,12 @@
     <a class="brand" href="{{ url_for('home') }}">LANStream</a>
     {% block topbar_filter %}{% endblock %}
   </div>
-  <nav class="global-nav" aria-label="Media navigation"><a href="/search">Search</a> <a href="/favorites">Favorites</a> <a href="{{ url_for('cleanup.page') }}">Library Cleanup</a></nav>
+  <nav class="global-nav" aria-label="Media navigation"><a href="/search">Search</a> <a href="/favorites">Favorites</a> <a href="{{ url_for('cleanup.page') }}">Library Cleanup</a> <a href="{{ url_for('settings_page') }}">Settings</a></nav>
   {% if session.get('authenticated') %}<a class="logout" href="{{ url_for('logout') }}">Log out</a>{% endif %}
 </header>
 <main class="page">{% block content %}{% endblock %}</main>
 <script src="{{ url_for('static', filename='favorite.js') }}" defer></script>
+<script src="{{ url_for('static', filename='activity.js') }}" defer></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

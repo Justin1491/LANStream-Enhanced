@@ -86,6 +86,7 @@ class DirectoryIndex:
                     kind TEXT, name TEXT, PRIMARY KEY(profile,root,rel));
                 CREATE INDEX IF NOT EXISTS entries_name_order ON entries
                     (root,directory,version,(kind='folder') DESC,name COLLATE NATURAL_NAME);
+                CREATE INDEX IF NOT EXISTS entries_thumbnail_order ON entries(root,rel COLLATE BINARY);
                 CREATE TABLE IF NOT EXISTS crawls(profile TEXT,root TEXT,path TEXT,relative TEXT,
                     excluded TEXT,paused INTEGER,PRIMARY KEY(profile,root));
                 CREATE TABLE IF NOT EXISTS crawl_frontier(profile TEXT,root TEXT,directory TEXT,
@@ -432,6 +433,25 @@ class DirectoryIndex:
                     + ''.join(' AND ' + clause for clause in extra)
                     + ' ORDER BY e.rel COLLATE BINARY LIMIT 100',
                     [root_id(root), relative, after, *values]).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                yield row['rel']
+            after = rows[-1]['rel']
+
+    def automatic_thumbnail_sources(self, root, excluded=()):
+        """Yield recursively indexed media in bounded batches without accessing media disks."""
+        self._register_roots([root])
+        extra, values = self._exclusion_sql(root, excluded)
+        after = ''
+        while not self._closed:
+            with self._reader() as db:
+                rows = db.execute(
+                    'SELECT e.rel FROM entries e JOIN folders f ON e.root=f.root AND e.directory=f.directory '
+                    'AND e.version=f.version WHERE e.root=? AND e.rel COLLATE BINARY>? '
+                    "AND e.kind IN ('video','image','pdf','comic') AND " + self._visible_sql()
+                    + ''.join(' AND ' + clause for clause in extra)
+                    + ' ORDER BY e.rel COLLATE BINARY LIMIT 100', [root_id(root), after, *values]).fetchall()
             if not rows:
                 return
             for row in rows:

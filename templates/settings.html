@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Settings · LANStream Enhanced{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', filename='settings.css') }}">
+<section class="settings">
+  <h1>Settings &amp; status</h1>
+  <p id="settingsMessage" role="status" aria-live="polite"></p>
+  <section class="settings-card"><h2>Automatic thumbnails</h2>
+    <p>Prepare indexed libraries and subfolders after 60 seconds without LANStream users. Browsing and playback take priority.</p>
+    <label><input type="checkbox" id="automaticThumbnails"> Enable automatic thumbnail preparation</label>
+    <p id="thumbnailStatus" class="muted">Loading…</p><p id="schedulerStatus" class="muted"></p>
+  </section>
+  <section class="settings-card"><h2>Directory indexing</h2><div id="indexingStatus" class="muted">Loading…</div></section>
+  <section class="settings-card"><h2>Storage</h2><p>Cache and application files only; library files are excluded. Sizes are measured when requested.</p>
+    <button id="scanStorage" type="button">Measure storage</button><p id="storageStatus" role="status"></p><div id="storageDetails"></div>
+  </section>
+  <section class="settings-card"><h2>Software updates</h2><p>Check the latest source revision on GitHub. This does not install updates.</p>
+    <button id="checkUpdates" type="button">Check for updates</button><p id="updateStatus" role="status"></p>
+  </section>
+  <p><a href="/transcoder-status">Transcoder status</a></p>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='settings.js') }}" defer></script>{% endblock %}

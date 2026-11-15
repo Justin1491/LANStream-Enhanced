@@ -11,6 +11,7 @@ class ImageScheduler:
         self._limit = max(1, int(max_pending))
         self._retry_seconds = max(0, retry_seconds)
         self._streaming = streaming or (lambda: False)
+        self._automatic_eligible = lambda: False
         self._condition = threading.Condition()
         self._pending = {}
         self._active = {}
@@ -61,10 +62,53 @@ class ImageScheduler:
             return fresh
 
     def is_current(self, source, output):
-        fingerprint = self._fingerprint(source)
         with self._condition:
             job = self._active.get(str(output))
-            return job is not None and job['source'] == Path(source) and fingerprint == job['fingerprint']
+            if job and job['priority'] >= 30 and not self._automatic_allowed():
+                job['cancelled'] = True
+            if job is None or job.get('cancelled'):
+                return False
+        fingerprint = self._fingerprint(source)
+        with self._condition:
+            return (not job.get('cancelled') and job['source'] == Path(source)
+                    and fingerprint == job['fingerprint'])
+
+    def is_automatic(self, output):
+        with self._condition:
+            job = self._active.get(str(output))
+            return job is not None and job['priority'] >= 30
+
+    def set_automatic_eligibility(self, callback):
+        with self._condition:
+            self._automatic_eligible = callback
+            self._condition.notify_all()
+
+    def _automatic_allowed(self):
+        try:
+            return (not self._closed and not self._paused and not self._streaming_active()
+                    and bool(self._automatic_eligible())
+                    and not any(job['priority'] < 30 for job in (*self._pending.values(), *self._active.values())))
+        except Exception:
+            logging.getLogger(__name__).exception('Cannot read automatic thumbnail eligibility')
+            return False
+
+    def automatic_allowed(self):
+        with self._condition:
+            return self._automatic_allowed()
+
+    def scheduled(self, output):
+        with self._condition:
+            return str(output) in self._pending or str(output) in self._active
+
+    def cancel_automatic(self):
+        with self._condition:
+            for key, job in list(self._pending.items()):
+                if job['priority'] >= 30:
+                    del self._pending[key]
+            for job in self._active.values():
+                if job['priority'] >= 30:
+                    job['cancelled'] = True
+            self._condition.notify_all()
 
     def mark_failed(self, generation, output):
         key = str(output)
@@ -103,6 +147,10 @@ class ImageScheduler:
             self._pending[key] = dict(source=source, output=output, width=width,
                                       fingerprint=fingerprint, sequence=self._sequence,
                                       priority=min(priority, existing['priority']) if existing else priority)
+            if priority < 30:
+                for job in self._active.values():
+                    if job['priority'] >= 30:
+                        job['cancelled'] = True
             self._condition.notify_all()
             return True
 
@@ -121,7 +169,9 @@ class ImageScheduler:
                         return
                     streaming = self._streaming_active()
                     eligible = [(key, job) for key, job in self._pending.items()
-                                if not self._paused and (not streaming or job['priority'] == 0)]
+                                if not self._paused and (not streaming or job['priority'] == 0)
+                                and (job['priority'] < 30 or (self._automatic_allowed()
+                                     and not any(active['priority'] >= 30 for active in self._active.values())))]
                     if eligible:
                         key, job = min(eligible, key=lambda pair: (pair[1]['priority'], -pair[1]['sequence']))
                         del self._pending[key]
@@ -144,8 +194,9 @@ class ImageScheduler:
                     else:
                         self.mark_failed(0, job['output'])
             except Exception:
-                self.mark_failed(0, job['output'])
-                logging.getLogger(__name__).exception('Thumbnail generation failed for %s', job['source'])
+                if self.is_current(job['source'], job['output']):
+                    self.mark_failed(0, job['output'])
+                    logging.getLogger(__name__).exception('Thumbnail generation failed for %s', job['source'])
             finally:
                 with self._condition:
                     self._active.pop(key, None)

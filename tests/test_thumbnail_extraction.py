@@ -116,6 +116,50 @@ class ThumbnailExtractionTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertFalse(self.tmp.exists())
 
+    def test_idle_process_cancellation_kills_and_reaps_child(self):
+        import time
+        child = Mock()
+        child.poll.return_value = None
+        self.scheduler.is_current.side_effect = [True, False]
+        with patch.object(self.server.subprocess, 'Popen') as popen:
+            popen.return_value.__enter__.return_value = child
+            with self.assertRaises(InterruptedError):
+                self.server.run_idle_image_process(
+                    ['fictional-ffmpeg'], self.source, self.output, self.scheduler,
+                    time.monotonic() + 30, capture_output=True, timeout=90)
+        child.kill.assert_called_once()
+        child.communicate.assert_called_once_with()
+
+    def test_automatic_cbr_checks_cancellation_between_listing_and_extracting(self):
+        self.source = self.root / 'fictional.cbr'
+        self.source.write_bytes(b'fictional archive')
+        self.scheduler.is_automatic.return_value = True
+        current = True
+        self.scheduler.is_current.side_effect = lambda *args: current
+        def listed(*args, **kwargs):
+            nonlocal current
+            current = False
+            return ['page1.jpg']
+        with patch.object(self.server, '_seven_zip_names', side_effect=listed) as names, \
+             patch.object(self.server, '_seven_zip_read') as extract:
+            self.server.generate_image(self.source, self.output, 360, 7, self.scheduler)
+        self.assertIn('runner', names.call_args.kwargs)
+        extract.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_idle_process_total_deadline_kills_and_reaps_child(self):
+        import time
+        child = Mock()
+        child.poll.return_value = None
+        with patch.object(self.server.subprocess, 'Popen') as popen:
+            popen.return_value.__enter__.return_value = child
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self.server.run_idle_image_process(
+                    ['fictional-ffmpeg'], self.source, self.output, self.scheduler,
+                    time.monotonic() - 1, capture_output=True, timeout=90)
+        child.kill.assert_called_once()
+        child.communicate.assert_called_once_with()
+
     def test_large_jpeg_is_reduced_before_orientation_processing(self):
         image = self.server.Image.new('RGB', (4000, 3000), 'red')
         data = io.BytesIO()

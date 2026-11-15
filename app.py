@@ -30,6 +30,8 @@ from werkzeug.exceptions import HTTPException
 from hls_streams import HLSStreams
 from directory_index import DirectoryIndex, FILE_TYPE_KINDS, root_id, _relative
 from image_scheduler import ImageScheduler
+from automatic_thumbnails import AutomaticThumbnails
+from system_status import StorageStatus, UpdateStatus
 
 def application_dir() -> Path:
     # For a PyInstaller onedir build, editable files belong beside LANStream.exe.
@@ -53,6 +55,7 @@ VAAPI_DEVICE = os.environ.get("LANSTREAM_VAAPI_DEVICE", "/dev/dri/renderD128")
 # Serialize cache publication and PyMuPDF work across viewer/thumbnail threads.
 VIEWER_RENDER_LOCK = threading.Lock()
 CLEANUP_ACTIVITY_LOCK = threading.RLock()
+SETTINGS_WRITE_LOCK = threading.Lock()
 ACTIVE_PROBES = {}
 
 
@@ -84,6 +87,7 @@ def load_settings() -> dict[str, str]:
         "directory_cache_ttl": "300",
         "directory_scan_timeout": "30",
         "automatic_indexing": "true",
+        "automatic_thumbnails": "true",
         "library_cleanup_enabled": "false",
         "thumbnail_workers": "2",
         "low_bandwidth_resolution": "854x480",
@@ -570,7 +574,7 @@ def _viewer_cache_path(kind: str, root_index: int, root: Path, source: Path) -> 
     return base.with_name(f"{base.stem}.{stat.st_mtime_ns}-{stat.st_size}.jpg")
 
 
-def probe(path: Path) -> dict[str, Any]:
+def probe(path: Path, *, runner=None) -> dict[str, Any]:
     cmd = [
         FFPROBE, "-v", "error",
         "-show_entries",
@@ -586,7 +590,7 @@ def probe(path: Path) -> dict[str, Any]:
             raise RuntimeError('This file has a pending cleanup operation.')
         ACTIVE_PROBES[key] = ACTIVE_PROBES.get(key, 0) + 1
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+        proc = (runner or subprocess.run)(cmd, capture_output=True, text=True, timeout=30,
                               stdin=subprocess.DEVNULL,
                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         if proc.returncode:
@@ -681,14 +685,14 @@ def find_7zip() -> str | None:
 SEVEN_ZIP = find_7zip()
 
 
-def _seven_zip_names(source: Path) -> list[str]:
+def _seven_zip_names(source: Path, *, runner=None) -> list[str]:
     if not SEVEN_ZIP:
         raise RuntimeError(
             "7-Zip is required for CBR viewing. Install 7zip/7z "
             "or place the 7-Zip executable beside LANStream."
         )
 
-    proc = subprocess.run(
+    proc = (runner or subprocess.run)(
         [SEVEN_ZIP, "l", "-slt", "-ba", str(source)],
         capture_output=True,
         text=True,
@@ -716,14 +720,14 @@ def _seven_zip_names(source: Path) -> list[str]:
     return names
 
 
-def _seven_zip_read(source: Path, member: str) -> bytes:
+def _seven_zip_read(source: Path, member: str, *, runner=None) -> bytes:
     if not SEVEN_ZIP:
         raise RuntimeError(
             "7-Zip is required for CBR viewing. Install 7zip/7z "
             "or place the 7-Zip executable beside LANStream."
         )
 
-    proc = subprocess.run(
+    proc = (runner or subprocess.run)(
         [SEVEN_ZIP, "x", "-so", "-y", str(source), member],
         capture_output=True,
         timeout=60,
@@ -762,8 +766,10 @@ def _comic_names(source: Path) -> list[str]:
     return list(_comic_names_cached(str(source), stat.st_mtime_ns, stat.st_size))
 
 
-def _comic_image_bytes(source: Path, page: int) -> bytes:
-    names = _comic_names(source)
+def _comic_image_bytes(source: Path, page: int, *, runner=None, current=None) -> bytes:
+    names = _seven_zip_names(source, runner=runner) if runner and source.suffix.lower() == '.cbr' else _comic_names(source)
+    if current and not current():
+        raise InterruptedError('Automatic thumbnail preparation paused')
     if page < 0 or page >= len(names):
         raise IndexError(page)
     name = names[page]
@@ -771,32 +777,60 @@ def _comic_image_bytes(source: Path, page: int) -> bytes:
         with zipfile.ZipFile(source) as archive:
             return archive.read(name)
     if source.suffix.lower() == ".cbr":
-        return _seven_zip_read(source, name)
+        return _seven_zip_read(source, name, runner=runner)
     raise ValueError(f"Unsupported comic archive: {source.suffix}")
 
 
-def _generate_nonvideo_thumbnail(source: Path, output: Path, width: int) -> bool:
+def _generate_nonvideo_thumbnail(source: Path, output: Path, width: int, *, runner=None, current=None) -> bool:
     kind = media_kind(source)
     if kind == "image":
         with Image.open(source) as image:
             _save_pillow_jpeg(image, output, width)
         return True
     if kind == "pdf":
-        with VIEWER_RENDER_LOCK, pymupdf.open(source) as document:
-            if document.page_count < 1:
+        with VIEWER_RENDER_LOCK:
+            if current and not current():
                 return False
-            page = document.load_page(0)
-            scale = max(1.0, width / max(1.0, page.rect.width))
-            pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
-            with Image.open(io.BytesIO(pix.tobytes("png"))) as image:
-                _save_pillow_jpeg(image, output, width)
+            with pymupdf.open(source) as document:
+                if document.page_count < 1:
+                    return False
+                page = document.load_page(0)
+                scale = max(1.0, width / max(1.0, page.rect.width))
+                pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+                with Image.open(io.BytesIO(pix.tobytes("png"))) as image:
+                    _save_pillow_jpeg(image, output, width)
         return True
     if kind == "comic":
-        data = _comic_image_bytes(source, 0)
+        data = _comic_image_bytes(source, 0, runner=runner, current=current)
         with Image.open(io.BytesIO(data)) as image:
             _save_pillow_jpeg(image, output, width)
         return True
     return False
+
+
+def run_idle_image_process(command, source, output, scheduler, deadline, **options):
+    """Cancel idle extraction when a person returns, including buffered playback."""
+    if not scheduler.is_current(source, output):
+        raise InterruptedError('Automatic thumbnail preparation paused')
+    options.pop('capture_output', None)
+    options.pop('timeout', None)
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options) as process:
+        try:
+            while True:
+                if not scheduler.is_current(source, output):
+                    raise InterruptedError('Automatic thumbnail preparation paused')
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, 30)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(.2, remaining))
+                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
 
 
 def generate_image(source: Path, output: Path, width: int, generation: int, scheduler: ImageScheduler):
@@ -811,13 +845,23 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
     tmp = output.with_suffix(".tmp.jpg")
 
     try:
+        automatic = scheduler.is_automatic(output) is True
+        runner = subprocess.run
+        if automatic:
+            deadline = time.monotonic() + 30
+            runner = lambda command, **options: run_idle_image_process(
+                command, source, output, scheduler, deadline, **options)
         if media_kind(source) != "video":
-            if _generate_nonvideo_thumbnail(source, tmp, width):
+            options = dict(runner=runner, current=lambda: scheduler.is_current(source, output)) if automatic else {}
+            if _generate_nonvideo_thumbnail(source, tmp, width, **options):
                 if scheduler.is_current(source, output):
                     tmp.replace(output)
             return
 
-        info = probe(source)
+        if automatic:
+            info = probe(source, runner=runner)
+        else:
+            info = probe(source)
         candidates = screenshot_candidates(info)
 
         for stamp in candidates:
@@ -830,7 +874,7 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
                 "-vf", f"blackframe=amount=0:threshold=32,scale={width}:-2:force_original_aspect_ratio=decrease",
                 "-q:v", "3", "-y", str(tmp),
             ]
-            proc = subprocess.run(cmd, capture_output=True, timeout=90,
+            proc = runner(cmd, capture_output=True, timeout=90,
                                   stdin=subprocess.DEVNULL,
                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             match = re.search(rb"pblack:(\d+)", proc.stderr or b"")
@@ -854,7 +898,7 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
             "-vf", f"scale={width}:-2:force_original_aspect_ratio=decrease",
             "-q:v", "3", "-y", str(tmp),
         ]
-        proc = subprocess.run(cmd, capture_output=True, timeout=90,
+        proc = runner(cmd, capture_output=True, timeout=90,
                               stdin=subprocess.DEVNULL,
                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         if (
@@ -863,6 +907,8 @@ def generate_image(source: Path, output: Path, width: int, generation: int, sche
             and scheduler.is_current(source, output)
         ):
             tmp.replace(output)
+    except InterruptedError:
+        return
     except Exception as exc:
         scheduler.mark_failed(generation, output)
         app.logger.warning("Thumbnail generation failed for %s: %s", source, exc)
@@ -1022,6 +1068,18 @@ def password_gate():
         if request.path.startswith("/api/"):
             return jsonify(error="Sign in required"), 401
         return redirect(url_for("login", next=request.path))
+
+
+@app.before_request
+def record_lanstream_activity():
+    # Status polls must not keep the server busy after clients stop using it.
+    polling = {'settings_api', 'prepare_thumbnails_api', 'indexing_api',
+               'transcoder_status_api', 'legacy_hardware_status', 'image_ready',
+               'cleanup.job', 'cleanup.durations'}
+    if (request.endpoint and request.endpoint != 'static' and request.endpoint != 'activity_api'
+            and not (request.method == 'GET' and (request.endpoint in polling
+                     or request.headers.get('X-LANStream-Poll') == '1'))):
+        automatic_thumbnails.touch()
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -2220,6 +2278,101 @@ def forbidden(_):
 
 from cleanup_routes import register_cleanup
 register_cleanup(sys.modules[__name__])
+
+
+def automatic_thumbnail_candidates(stop):
+    seen = set()
+    for profile in load_profiles():
+        for root_index, root in enumerate(profile['roots']):
+            for relative in directory_index.automatic_thumbnail_sources(root, profile['excluded']):
+                if stop.is_set():
+                    return
+                try:
+                    source = safe_path(root, relative, profile)
+                    output = cache_path('thumbs', root_index, root, source)
+                    if str(output) in seen:
+                        continue
+                    seen.add(str(output))
+                    yield source, output, 360
+                except (HTTPException, OSError):
+                    continue
+
+
+automatic_thumbnails = AutomaticThumbnails(
+    image_scheduler, automatic_thumbnail_candidates,
+    enabled=bool_setting(SETTINGS['automatic_thumbnails']))
+storage_status = StorageStatus(APP_DIR, RESOURCE_DIR, CACHE_DIR)
+update_status = UpdateStatus(APP_DIR)
+atexit.register(automatic_thumbnails.close)
+atexit.register(storage_status.close)
+atexit.register(update_status.close)
+
+
+@app.route('/api/activity', methods=['POST'])
+def activity_api():
+    explorer_write_check()
+    automatic_thumbnails.touch()
+    return '', 204
+
+
+def save_automatic_thumbnail_setting(enabled):
+    with SETTINGS_WRITE_LOCK:
+        lines = CONFIG_FILE.read_text(encoding='utf-8').splitlines(keepends=True) if CONFIG_FILE.exists() else []
+        value = 'true' if enabled else 'false'
+        setting = 'automatic_thumbnails=' + value
+        found = False
+        for index, line in enumerate(lines):
+            if line.split('=', 1)[0].strip().lower() == 'automatic_thumbnails':
+                ending = '\n' if line.endswith('\n') else ''
+                lines[index] = setting + ending
+                found = True
+        if not found:
+            if lines and not lines[-1].endswith('\n'):
+                lines[-1] += '\n'
+            lines.insert(0, setting + '\n')
+        temporary = CONFIG_FILE.with_name(CONFIG_FILE.name + '.settings.tmp')
+        try:
+            temporary.write_text(''.join(lines), encoding='utf-8')
+            temporary.replace(CONFIG_FILE)
+        finally:
+            temporary.unlink(missing_ok=True)
+        SETTINGS['automatic_thumbnails'] = value
+        automatic_thumbnails.set_enabled(enabled)
+
+
+@app.route('/settings')
+def settings_page():
+    return render_template('settings.html')
+
+
+@app.route('/api/settings', methods=['GET', 'POST'])
+def settings_api():
+    if request.method == 'POST':
+        explorer_write_check()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            abort(400)
+        action = data.get('action')
+        if action == 'enable_thumbnails':
+            if type(data.get('enabled')) is not bool:
+                abort(400)
+            try:
+                save_automatic_thumbnail_setting(data['enabled'])
+            except OSError:
+                return jsonify(error='Could not save configuration. Check that it is writable.'), 503
+        elif action == 'scan_storage':
+            storage_status.refresh()
+        elif action == 'check_updates':
+            update_status.check()
+        else:
+            abort(400)
+    profile, roots, _, indexes = explorer_roots()
+    indexing = directory_index.crawl_status(profile['id'], roots) if profile else []
+    labels = {root_id(root): root_label(root, indexes[root_id(root)]) for root in roots}
+    for item in indexing:
+        item['label'] = labels[item['root_id']]
+    return jsonify(thumbnails=automatic_thumbnails.status(), scheduler=image_scheduler.status(),
+                   indexing=indexing, storage=storage_status.status(), updates=update_status.status())
 
 
 if __name__ == "__main__":

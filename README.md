@@ -52,7 +52,11 @@ Root reordering does not change a Favorite's identity. Missing or renamed items 
 - **Prepare thumbnails** processes the entire current folder, including later pages and filtered-out files, without descending into subfolders. Progress and **Stop preparation** remain available when you return to the folder.
 - Preparation continues after navigation, uses lower priority than browsing, and pauses during tracked playback. It stops on application shutdown; starting it again reuses completed previews.
 
-Two thumbnail workers are used by default. Set `thumbnail_workers=1` if preview generation competes with playback on a smaller server. Indexing alone does not start bulk thumbnail generation.
+Automatic thumbnail preparation is enabled by default. After 60 seconds without LANStream use or tracked playback, it prepares indexed files across all libraries and subfolders, one at a time, behind browsing and manual preparation. Visible pages and buffered playback report activity; routine status polling does not. Completed images are reused after restart. Disable it from **Settings** or set `automatic_thumbnails=false` in `config.txt` and restart.
+
+Two thumbnail workers are used by default for interactive/manual work. Set `thumbnail_workers=1` if preview generation competes with playback on a smaller server.
+
+**Settings** also shows thumbnail/indexing progress, offers an explicit cache/application storage measurement, and checks the latest source revision on GitHub. Storage measurements exclude library files. Update checks do not install anything and report unknown installed revisions when build identity is unavailable.
 
 ### More than video
 

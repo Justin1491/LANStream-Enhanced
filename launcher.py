@@ -103,6 +103,8 @@ def main(stop_event=None, on_ready=None):
                 # handle_close also wakes workers waiting for output space.
                 for channel in tuple(getattr(server, 'active_channels', {}).values()):
                     channel.handle_close()
+            for service in (application.automatic_thumbnails, application.storage_status, application.update_status):
+                closing.callback(service.close)
         if stop_event is not None:
             for cleanup in (application.hls_streams.close, application.cleanup_service.close):
                 atexit.unregister(cleanup)
