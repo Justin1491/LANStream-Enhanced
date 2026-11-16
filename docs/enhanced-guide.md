@@ -93,6 +93,22 @@ Use **File type** in Browse, Search or Favorites to choose **All**, **Videos**,
 text/Markdown files. Folders remain visible for navigation. The filter combines
 with filename filtering and applies before pagination; changing it returns to
 page 1. The URL preserves the selection for reloads and Browser Back/Forward.
+Confirmed indexed files reuse local cached thumbnails without checking the media
+share on each image request. Canonical access checks are reused for the confirmed
+folder snapshot. Index refreshes detect changes; until then, a changed
+or externally removed file may retain its previous thumbnail. Missing images still
+use the existing validated generation path.
+
+Browse, Search and Favorites keep a bounded thumbnail cache in the current tab's
+session storage (up to 2 MiB of encoded image text). Returning to folders reuses
+those images; per-file size/modified versions invalidate changed thumbnails.
+Closing the tab normally clears these browser copies, and logout, login/profile
+changes and changed library access settings invalidate them. Browser session
+restore may retain tab storage; restored pages revalidate access before displaying
+content. HTTP disk caching stays disabled; the server explicitly allows only this
+temporary thumbnail cache. Server thumbnail files are retained. If browser storage
+is unavailable, reuse lasts only for the current page.
+
 Previous/Next replaces a page of at most 100 items, keeping the DOM bounded.
 Browser Back restores the page/query; view switching keeps the same items.
 

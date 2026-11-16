@@ -504,6 +504,146 @@ class ExplorerRoutes(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         response.close()
 
+    def cached_thumbnail(self, relative='Café Clip 2.mp4', kind='thumbs'):
+        source = self.root / relative
+        output = self.server.cache_path(kind, 0, self.root, source.resolve())
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b'fictional-jpeg')
+        self.assertTrue(self.server.image_scheduler.cached(source, output))
+        return output
+
+    def test_confirmed_thumbnail_and_readiness_do_not_touch_media_filesystem(self):
+        self.warm()
+        self.cached_thumbnail()
+        confirmed = self.client.get('/thumb/0/Café Clip 2.mp4')
+        self.assertEqual(confirmed.status_code, 200)
+        confirmed.close()
+        original_stat, original_resolve = Path.stat, Path.resolve
+        def guard(original):
+            def call(path, *args, **kwargs):
+                if path == self.root or path.is_relative_to(self.root):
+                    raise AssertionError('cached thumbnail contacted media share')
+                return original(path, *args, **kwargs)
+            return call
+        with patch.object(Path, 'stat', guard(original_stat)), patch.object(Path, 'resolve', guard(original_resolve)):
+            response = self.client.get('/thumb/0/Café Clip 2.mp4')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data, b'fictional-jpeg')
+            self.assertEqual(response.headers.get('X-LANStream-Thumbnail-Cache'), 'tab-session')
+            self.assertIn('no-store', response.headers['Cache-Control'])
+            response.close()
+            ready = self.client.get('/api/image-ready/thumbs/0/Café Clip 2.mp4').get_json()
+            self.assertTrue(ready['ready'])
+
+    def test_indexed_thumbnail_rejects_changed_size_and_removed_or_hidden_files(self):
+        self.warm()
+        self.cached_thumbnail()
+        source = self.root / 'Café Clip 2.mp4'
+        before = source.stat()
+        source.write_bytes(b'a different size even when timestamps are retained')
+        os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.server.directory_index.listing(self.root, refresh=True)
+        self.assertTrue(self.server.directory_index.wait_for_idle())
+        self.assertEqual(self.client.get('/thumb/0/Café Clip 2.mp4').status_code, 404)
+        other = self.root / 'Café Clip 10.mp4'
+        self.cached_thumbnail(other.name)
+        self.server.directory_index.hide_file(self.root, other.name, pending=True)
+        self.assertEqual(self.client.get('/thumb/0/Café Clip 10.mp4').status_code, 404)
+        self.server.directory_index.hide_file(self.root, other.name, hidden=False)
+        other.unlink()
+        self.server.directory_index.listing(self.root, refresh=True)
+        self.assertTrue(self.server.directory_index.wait_for_idle())
+        self.assertEqual(self.client.get('/thumb/0/Café Clip 10.mp4').status_code, 404)
+
+    def test_confirmed_thumbnail_still_checks_current_profile_exclusions(self):
+        self.warm()
+        bob = self.server.app.test_client()
+        bob.post('/login', data={'password': 'bob'})
+        bob.get('/api/browse/0/Private')
+        self.assertTrue(self.server.directory_index.wait_for_idle())
+        self.cached_thumbnail('Private/Hidden.mp4')
+        response = bob.get('/thumb/0/Private/Hidden.mp4')
+        self.assertEqual(response.status_code, 200)
+        response.close()
+        self.assertEqual(self.client.get('/thumb/0/Private/Hidden.mp4').status_code, 404)
+        self.assertEqual(self.client.get('/thumb/0/.lanstream-trash/hidden.mp4').status_code, 404)
+        self.assertEqual(self.client.get('/thumb/0/../outside.mp4').status_code, 403)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows short paths')
+    def test_confirmed_thumbnail_cannot_bypass_canonical_exclusion_through_short_root(self):
+        import ctypes
+        short = ctypes.create_unicode_buffer(32768)
+        if not ctypes.windll.kernel32.GetShortPathNameW(str(self.root), short, len(short)):
+            self.skipTest('Windows short path unavailable')
+        alias = Path(short.value)
+        if alias == self.root.resolve():
+            self.skipTest('Windows did not provide a distinct short path')
+        self.config.write_text(f'port=8061\n<alice>\n{alias}\n-{self.root / "Private"}\n<bob>\n{alias}\n', encoding='utf-8')
+        bob = self.server.app.test_client()
+        bob.post('/login', data={'password': 'bob'})
+        bob.get('/api/browse/0/Private')
+        self.assertTrue(self.server.directory_index.wait_for_idle())
+        self.cached_thumbnail('Private/Hidden.mp4')
+        response = self.client.get('/thumb/0/Private/Hidden.mp4')
+        try:
+            self.assertEqual(response.status_code, 404)
+        finally:
+            response.close()
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction test')
+    def test_cached_thumbnail_follows_root_alias_after_index_refresh(self):
+        import subprocess
+        first, second, alias = (self.root / name for name in ('First', 'Second', 'Alias'))
+        for target, value in ((first, b'first-jpeg'), (second, b'second-jpeg')):
+            target.mkdir()
+            source = target / 'clip.mp4'
+            source.write_bytes(b'media')
+            os.utime(source, (1000000000, 1000000000))
+            output = self.server.cache_path('thumbs', 0, target, source.resolve())
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(value)
+        def link(target):
+            return subprocess.run(['cmd', '/c', 'mklink', '/J', str(alias), str(target)], capture_output=True)
+        if link(first).returncode:
+            self.skipTest('junction creation unavailable')
+        try:
+            self.config.write_text(f'port=8061\n<alice>\n{alias}\n', encoding='utf-8')
+            self.warm()
+            response = self.client.get('/thumb/0/clip.mp4')
+            self.assertEqual(response.data, b'first-jpeg')
+            response.close()
+            alias.rmdir()
+            self.assertEqual(link(second).returncode, 0)
+            self.server.directory_index.listing(alias, refresh=True)
+            self.assertTrue(self.server.directory_index.wait_for_idle())
+            response = self.client.get('/thumb/0/clip.mp4')
+            try:
+                self.assertEqual(response.data, b'second-jpeg')
+            finally:
+                response.close()
+        finally:
+            if alias.exists():
+                alias.rmdir()
+
+    def test_login_page_in_an_already_signed_in_tab_keeps_current_cache_scope(self):
+        scope = self.warm().get_json()['thumbnail_scope']
+        self.assertIn(f'name="lanstream-thumbnail-scope" content="{scope}"'.encode(), self.client.get('/login').data)
+
+    def test_thumbnail_session_scope_changes_with_login_and_access_settings(self):
+        first = self.warm().get_json()['thumbnail_scope']
+        self.assertEqual(first, self.client.get('/api/browse/0/').get_json()['thumbnail_scope'])
+        page = self.client.get('/browse/0/').data
+        self.assertIn(f'name="lanstream-thumbnail-scope" content="{first}"'.encode(), page)
+        self.client.get('/logout')
+        self.client.post('/login', data={'password': 'bob'})
+        second = self.client.get('/api/browse/0/').get_json()['thumbnail_scope']
+        self.assertNotEqual(first, second)
+        self.config.write_text(self.config.read_text(encoding='utf-8') + '-/Private\n', encoding='utf-8')
+        third = self.client.get('/api/browse/0/').get_json()['thumbnail_scope']
+        self.assertNotEqual(second, third)
+        self.client.get('/logout')
+        self.assertIn(b'name="lanstream-thumbnail-scope" content=""', self.client.get('/login').data)
+
     def test_private_metadata_and_images_are_not_browser_cached_between_profiles(self):
         self.warm()
         response = self.client.get('/api/browse/0/')

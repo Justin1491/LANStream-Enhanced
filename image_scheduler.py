@@ -61,6 +61,18 @@ class ImageScheduler:
                 self._fingerprints[str(output)] = fingerprint
             return fresh
 
+    def cached_from_index(self, output, size, mtime):
+        if size is None or mtime is None:
+            return False
+        try:
+            if not Path(output).is_file() or Path(output).stat().st_mtime < mtime:
+                return False
+        except OSError:
+            return False
+        with self._condition:
+            known = self._fingerprints.get(str(output))
+            return known is None or (known[0] == size and abs(known[1] / 1e9 - mtime) < 0.000001)
+
     def is_current(self, source, output):
         with self._condition:
             job = self._active.get(str(output))

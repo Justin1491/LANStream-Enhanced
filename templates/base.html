@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0d1117">
   <meta name="lanstream-csrf" content="{{ csrf_token }}">
+  <meta name="lanstream-thumbnail-scope" content="{{ thumbnail_scope }}">
   <link rel="icon" href="data:,">
   <title>{% block title %}LANStream{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -34,6 +35,7 @@
 </dialog>
 <script src="{{ url_for('static', filename='rename.js') }}" defer></script>
 {% endif %}
+<script src="{{ url_for('static', filename='thumbnail-cache.js') }}" defer></script>
 <script src="{{ url_for('static', filename='favorite.js') }}" defer></script>
 <script src="{{ url_for('static', filename='activity.js') }}" defer></script>
 {% block scripts %}{% endblock %}

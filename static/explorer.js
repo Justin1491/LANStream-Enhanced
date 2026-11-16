@@ -97,21 +97,27 @@
       signal.addEventListener('abort', () => clearTimeout(retry), {once: true});
       const loadImage = () => new Promise(resolve => {
         if (stopped || signal.aborted || !image.isConnected || Date.now() >= deadline) { resolve(false); return; }
-        let timeout;
+        let timeout, finished = false;
+        const download = new AbortController();
         const done = event => {
+          if (finished) return;
+          finished = true; download.abort();
           clearTimeout(timeout);
           image.removeEventListener('load', done); image.removeEventListener('error', done);
           signal.removeEventListener('abort', cancel);
           const loaded = event?.type === 'load';
           image.hidden = !loaded;
-          if (!loaded) image.removeAttribute('src');
+          if (!loaded) { image.removeAttribute('src'); window.LANStreamThumbnailCache?.forget(url); }
           resolve(loaded);
         };
         const cancel = () => done();
         image.addEventListener('load', done, {once: true}); image.addEventListener('error', done, {once: true});
         signal.addEventListener('abort', cancel, {once: true});
         timeout = setTimeout(cancel, Math.min(10000, deadline - Date.now()));
-        image.src = image.dataset.src + '?v=' + encodeURIComponent(image.dataset.version);
+        const url = image.dataset.src + '?v=' + encodeURIComponent(image.dataset.version);
+        if (window.LANStreamThumbnailCache) {
+          window.LANStreamThumbnailCache.load(url, download.signal).then(source => { if (!finished) image.src = source; }).catch(cancel);
+        } else image.src = url;
       });
       const check = async () => {
         if (stopped || signal.aborted || !image.isConnected || Date.now() >= deadline) return;
@@ -143,7 +149,7 @@
         if (!image) {
           image = element('img'); image.alt = ''; image.hidden = true;
           image.dataset.src = item.thumb_url; image.dataset.ready = item.ready_url;
-          image.dataset.version = result.version || 'cached';
+          image.dataset.version = JSON.stringify([item.root_id, item.mtime, item.size]);
         }
         if (!image.complete || !image.naturalWidth) observer.observe(preview);
         preview.append(image); nextImages.set(key, image);
@@ -212,7 +218,13 @@
     if (searchLocation) { searchLocation.textContent = 'Checking search location…'; document.getElementById('searchContextDetails').textContent = ''; }
     try { const response = await fetch(explorer.dataset.api + '?' + params, {signal: controller.signal, cache: 'no-store', headers: background ? {'X-LANStream-Poll':'1'} : {}});
       if (!response.ok) throw Error(response.status === 401 ? 'Sign in again to continue.' : 'Unable to load this folder. Check access and try again.');
-      const result = await response.json(); if (current === sequence) render(result);
+      const result = await response.json();
+      if (current === sequence) {
+        if (result.thumbnail_scope !== undefined && window.LANStreamThumbnailCache?.sync(result.thumbnail_scope)) {
+          resetThumbnails(); thumbnailImages.clear();
+        }
+        render(result);
+      }
     } catch (error) { if (error.name !== 'AbortError' && current === sequence) status.textContent = error.message; }
   }
   function changed() { state.page = 1; load(); }

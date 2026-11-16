@@ -419,6 +419,20 @@ class DirectoryIndex:
             result.update(version=folder['version'] if folder else None, updated_at=folder['updated'] if folder else None, state=error_state or ('stale' if stale else 'ready' if folder else 'loading'), refreshing=key in self._jobs, error=error)
             return result
 
+    def thumbnail_entry(self, root, relative):
+        relative = _relative(relative)
+        self._register_roots([root])
+        with self._lock:
+            row = self._db.execute(
+                'SELECT e.kind,e.size,e.mtime,e.version,(' + self._visible_sql() + ') AS visible '
+                'FROM entries e JOIN folders f ON e.root=f.root AND e.directory=f.directory AND e.version=f.version '
+                'WHERE e.root=? AND e.directory=? AND e.rel=?',
+                (root_id(root), relative.rpartition('/')[0], relative)).fetchone()
+            if row is None and self._db.execute('SELECT 1 FROM hidden_aliases WHERE root=? AND rel=?',
+                                                (root_id(root), relative.casefold())).fetchone():
+                return dict(visible=False, kind=None, size=None, mtime=None)
+            return dict(row) if row else None
+
     def thumbnail_sources(self, root, relative='', excluded=()):
         self._register_roots([root])
         relative, after = _relative(relative), ''

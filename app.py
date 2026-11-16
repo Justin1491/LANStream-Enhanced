@@ -546,9 +546,9 @@ def image_siblings(root: Path, source: Path) -> tuple[str | None, str | None]:
     )
 
 
-def cache_root_key(root: Path) -> str:
+def cache_root_key(root: Path, *, resolve=True) -> str:
     try:
-        resolved = root.resolve(strict=False)
+        resolved = root.resolve(strict=False) if resolve else root
     except RuntimeError:
         resolved = root.absolute()
 
@@ -1128,14 +1128,28 @@ def explorer_template_context():
         except HTTPException:
             pass  # Error pages must not repeat the failed media authorization.
     return {'csrf_token': session['csrf_token'], 'favorite_current': favorite_current,
+            'thumbnail_scope': thumbnail_session_scope(),
             'automatic_indexing': directory_index.profiles is not None}
 
 
 @app.after_request
 def private_media_cache(response):
     if request.endpoint != 'static':
+        # Disk caching stays disabled; thumbnails explicitly opt into the bounded tab cache.
         response.headers['Cache-Control'] = 'private, no-store'
+        if request.endpoint == 'thumbnail' and response.status_code == 200:
+            response.headers['X-LANStream-Thumbnail-Cache'] = 'tab-session'
+            response.headers['X-LANStream-Thumbnail-Scope'] = thumbnail_session_scope()
     return response
+
+
+def thumbnail_session_scope():
+    profile = active_profile()
+    if not profile:
+        return ''
+    token = session.setdefault('thumbnail_cache_token', secrets.token_hex(16))
+    identity = [SERVER_INSTANCE, token, profile['id'], profile['roots'], profile['excluded']]
+    return hashlib.sha256(json.dumps(identity, default=str).encode('utf-8')).hexdigest()
 
 
 def explorer_context(root_index, relative=''):
@@ -1197,6 +1211,7 @@ def explorer_page_args():
 
 
 def explorer_items(result):
+    result['thumbnail_scope'] = thumbnail_session_scope()
     profile, roots, excluded, indexes = explorer_roots()
     flags = directory_index.favorite_flags(profile['id'], result['items']) if profile else []
     routes = dict(folder='browse', video='video_detail', image='image_viewer',
@@ -1798,6 +1813,34 @@ def best_cached_image(root_index: int, root: Path, source: Path, requested_kind:
     return None
 
 
+@lru_cache(maxsize=128)
+def thumbnail_access_paths(root, excluded, version):
+    # Resolve aliases once per confirmed folder snapshot, rather than once per image.
+    try:
+        return root.resolve(strict=False), tuple(path.resolve(strict=False) for path in excluded)
+    except (OSError, RuntimeError):
+        abort(404)
+
+
+def indexed_cached_image(root_index, relative, kind):
+    profile, root, relative, _ = explorer_context(root_index, relative)
+    entry = directory_index.thumbnail_entry(root, relative)
+    if entry is None:
+        return None
+    if not entry['visible'] or entry['kind'] not in ({'video'} if kind == 'posters' else {'video', 'image', 'pdf', 'comic'}):
+        abort(404)
+    canonical, excluded = thumbnail_access_paths(root, tuple(profile['excluded']), entry['version'])
+    source = canonical / relative
+    if reserved_media_path(source) or any(source.is_relative_to(path) for path in excluded):
+        abort(404)
+    # shortcut: indexed snapshots may be stale, refresh the index after external media changes.
+    for candidate in (('thumbs', 'posters') if kind == 'thumbs' else ('posters',)):
+        output = CACHE_DIR / candidate / cache_root_key(canonical, resolve=False) / Path(relative + '.jpg')
+        if image_scheduler.cached_from_index(output, entry['size'], entry['mtime']):
+            return output
+    return None
+
+
 def folder_cached_preview(root_index: int, folder_rel: str, recursive: bool = False) -> Path | None:
     root = get_root(root_index)
     for kind in ('thumbs', 'posters'):
@@ -1852,6 +1895,9 @@ def folder_preview(root_index, relpath):
 
 @app.route("/thumb/<int:root_index>/<path:relpath>")
 def thumbnail(root_index, relpath):
+    out = indexed_cached_image(root_index, relpath, 'thumbs')
+    if out:
+        return send_file(out, mimetype="image/jpeg", conditional=True, max_age=0)
     root = get_root(root_index)
     source = safe_path(root, relpath)
     if media_kind(source) not in {"video", "image", "pdf", "comic"}:
@@ -1864,6 +1910,9 @@ def thumbnail(root_index, relpath):
 
 @app.route("/poster/<int:root_index>/<path:relpath>")
 def poster(root_index, relpath):
+    out = indexed_cached_image(root_index, relpath, 'posters')
+    if out:
+        return send_file(out, mimetype="image/jpeg", conditional=True, max_age=0)
     root = get_root(root_index)
     source = safe_path(root, relpath)
     if not is_video(source):
@@ -1883,6 +1932,9 @@ def image_ready(kind, root_index, relpath):
     except ValueError:
         abort(400)
 
+    found = indexed_cached_image(root_index, relpath, kind)
+    if found:
+        return jsonify(ready=True, current=generation == image_scheduler.current_generation(), failed=False)
     root = get_root(root_index)
     source = safe_path(root, relpath)
     source_kind = media_kind(source)

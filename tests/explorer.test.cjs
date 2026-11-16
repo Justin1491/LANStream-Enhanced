@@ -63,6 +63,7 @@ function explorer(automaticIndexing, resultOverrides = {}, options = {}) {
   const window = new EventTarget();
   const media = new EventTarget(); media.matches = !!options.mobile;
   window.scrollTo = () => {};
+  if (options.thumbnailCache) window.LANStreamThumbnailCache = options.thumbnailCache;
   vm.runInNewContext(script, {
     document: {
       getElementById: id => elements[id] || null,
@@ -283,7 +284,7 @@ test('search refresh keeps loaded images while adding matches, but reloads chang
   assert.equal(e.images.length, 2, 'loaded images must be reused when new results arrive');
   assert.equal(e.elements.explorerItems.children[0].children[0].children[0].children[0], first);
   assert.equal(first.hidden, false);
-  assert.equal(first.src, '/thumbnail/first?v=first', 'a directory version change must not reload unchanged media');
+  assert.equal(first.src, '/thumbnail/first?v=' + encodeURIComponent(JSON.stringify([undefined, rows[0].mtime, rows[0].size])), 'a directory version change must not reload unchanged media');
   rows[0].mtime = 2;
   await e.advance(1500);
   await flush();
@@ -371,4 +372,20 @@ test('thumbnails waiting behind slow downloads get their own retry budget', asyn
     'queue wait time must not expire thumbnails before their first download');
   e.window.dispatchEvent(new Event('pagehide'));
   assert.equal(e.timers.size, 0);
+});
+
+test('tab-cache sources render and a changed access scope replaces loaded private images', async () => {
+  let current = 'alice'; const calls = [];
+  const result = {thumbnail_scope:'alice'};
+  const e = explorer(undefined,result,{thumbnailCache:{
+    sync:next => { const changed = current !== next; current=next; return changed; },
+    load:async url => { calls.push(url); return 'data:image/jpeg;base64,/9j/'; }, forget() {},
+  }});
+  await flush(); e.intersect(); await flush();
+  const first = e.images[0]; assert.equal(first.src,'data:image/jpeg;base64,/9j/');
+  first.dispatchEvent(new Event('load')); await flush();
+  result.thumbnail_scope='bob';
+  e.elements.nextPage.onclick(); await flush(); e.intersect(); await flush();
+  assert.ok(e.images.slice(6).some(image => image.src === 'data:image/jpeg;base64,/9j/'));
+  assert.ok(calls.length > 2);
 });
