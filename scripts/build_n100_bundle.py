@@ -104,7 +104,7 @@ def config_text(roots):
         '# Private N100 setup template. Setup prompts for the application password.',
         'port=8061', 'use_master_password=false', 'master_password=', 'transcoder=auto',
         'directory_cache_ttl=300', 'directory_scan_timeout=30', 'automatic_indexing=true',
-        'automatic_thumbnails=true', 'thumbnail_workers=2',
+        'automatic_thumbnails=true', 'autoplay=true', 'thumbnail_workers=2',
         'low_bandwidth_resolution=854x480', 'low_bandwidth_bitrate=2M', '',
         '<__LANSTREAM_SETUP_PASSWORD__>', *normalized, '',
     ]

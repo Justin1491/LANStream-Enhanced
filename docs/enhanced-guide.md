@@ -31,6 +31,7 @@ directory_cache_ttl=300
 directory_scan_timeout=30
 automatic_indexing=true
 automatic_thumbnails=true
+autoplay=true
 thumbnail_workers=2
 low_bandwidth_resolution=1280x720
 low_bandwidth_bitrate=3M
@@ -40,12 +41,29 @@ low_bandwidth_bitrate=3M
 -/Restricted
 ```
 
-Defaults remain 854x480 / 2M for Low Bandwidth. Settings are read at startup;
-root/profile changes apply to later requests. Environment variables for config,
+Defaults remain 854x480 / 2M for Low Bandwidth. Changes made on the Settings page
+apply immediately; other settings are read at startup. Root/profile changes
+apply to later requests. Environment variables for config,
 cache, port, session secret and transcoder remain supported. Do not share logs
 or config files containing passwords or private media paths.
 
 ## Playback quality
+
+Use **Settings → Playback** to turn automatic playback on or off. The saved
+setting applies to all devices using this server and defaults to on. Browsers
+may still require tapping Play before allowing sound. With autoplay off, the
+player waits for Play before loading media or starting an encoder.
+
+The player uses Play/Pause icons with accessible labels and touch targets at
+least 44 CSS pixels tall. Audio selection appears only when multiple tracks
+are available; single-track audio remains selected for transcoding.
+
+On the video details page, **Delete file** checks the file, then asks you to
+confirm its name before moving it to recoverable Trash and returning to its
+folder. Restore or permanently delete it in **Library Cleanup**. Disk space is
+retained until permanent deletion. This uses the same Windows, password sign-in,
+and `library_cleanup_enabled=true` requirements as Cleanup; changed or busy files
+are rejected by the existing checks.
 
 The player offers **Normal** and **Low Bandwidth**. HEVC/H.265 source files,
 including MKV files, use H.264 transcoding with stereo AAC audio. The original

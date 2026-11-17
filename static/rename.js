@@ -42,7 +42,7 @@
       }
       const result = job.results[0];
       if (result.status !== 'renamed') throw Error(result.error || 'Rename failed. Refresh and try again.');
-      if (afterRename) { await afterRename(result); dialog.close(); }
+      if (afterRename) { $('renameStatus').textContent = 'Renamed. Refreshing results…'; await afterRename(result); dialog.close(); }
       else {
         const url = new URL(location.href);
         url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/') + 1) + encodeURIComponent(result.name);

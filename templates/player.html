@@ -15,7 +15,7 @@
 <button id="fullscreenTop" type="button" aria-label="Enter fullscreen">Fullscreen</button>
 </div>
 <div class="video-stage" id="videoStage"><video id="video" playsinline preload="metadata"></video>
-<div id="playerMessage" class="player-message">Starting playback…</div></div>
+<div id="playerMessage" class="player-message">{% if autoplay %}Starting playback…{% else %}Tap Play to start playback.{% endif %}</div></div>
 <div class="player-controls" id="playerControls">
 <div class="player-seek-row">
 <span id="currentLabel">0:00</span>
@@ -24,7 +24,10 @@
 </div>
 <div class="player-control-row">
 <div class="player-transport">
-<button id="togglePlay" type="button">Play</button>
+<button id="togglePlay" type="button" aria-label="Play" title="Play">
+<svg class="play-icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 3v18l15-9z"/></svg>
+<svg class="pause-icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 3h5v18H5zm9 0h5v18h-5z"/></svg>
+</button>
 <button id="back30" type="button" title="Back 30 seconds" aria-label="Back 30 seconds">&lt;&lt;</button>
 <button id="forward30" type="button" title="Forward 30 seconds" aria-label="Forward 30 seconds">&gt;&gt;</button>
 </div>
@@ -32,9 +35,9 @@
 <label><input type="radio" name="qualityMode" value="normal" checked> Normal</label>
 <label><input type="radio" name="qualityMode" value="low"> Low Bandwidth</label>
 </div>
-{% if audios %}<select id="audioSelect" title="Audio" aria-label="Audio track">{% for a in audios %}
+{% if audios|length > 1 %}<select id="audioSelect" title="Audio" aria-label="Audio track">{% for a in audios %}
 <option value="{{ a.index }}">{{ a.language }} · {{ a.codec }}{% if a.title %} · {{ a.title }}{% endif %}</option>
-{% endfor %}</select>{% endif %}
+{% endfor %}</select>{% elif audios %}<input type="hidden" id="audioSelect" value="{{ audios[0].index }}">{% endif %}
 {% set text_subs = subtitles | selectattr("text_supported") | list %}
 {% if text_subs %}<select id="subtitleSelect" title="Subtitles" aria-label="Subtitles"><option value="">Subtitles off</option>{% for s in text_subs %}
 <option value="{{ s.index }}">{{ s.language }}{% if s.title %} · {{ s.title }}{% endif %}</option>{% endfor %}</select>{% endif %}
@@ -48,6 +51,7 @@
 <details id="playbackDiagnostics" hidden><summary>Playback details</summary><pre id="playbackReport"></pre></details>
 <script>
 const nativePlayback={{ "true" if native else "false" }};
+const autoplay={{ autoplay|tojson }};
 const totalDuration={{ duration }};
 const playerShell=document.getElementById("playerShell"),
  video=document.getElementById("video"), message=document.getElementById("playerMessage"),
@@ -70,6 +74,7 @@ function usingDirect(){return nativePlayback&&!lowBandwidth;}
 function logicalTime(){return preparing?logicalOffset:usingDirect()?(video.currentTime||0):logicalOffset+(video.currentTime||0);}
 function audio(){return audioSelect?audioSelect.value:"";}
 function msg(t){message.textContent=t;message.classList.toggle("hidden",!t);}
+function playButton(playing){const label=playing?"Pause":"Play";togglePlay.setAttribute("aria-label",label);togglePlay.setAttribute("title",label);}
 function playbackRejected(error){if(error.name==="NotAllowedError"){needsPlayGesture=true;msg("Tap Play to start playback.");}}
 function subtitles(start){
  video.querySelectorAll("track").forEach(t=>t.remove());
@@ -167,8 +172,8 @@ function updateFullscreenState(){
 togglePlay.onclick=()=>{showControls();if(preparing)return;if(!started)return start(0);if(needsPlayGesture){needsPlayGesture=false;video.play().catch(playbackRejected);return;}if(video.paused&&nativeHls&&!usingDirect())return go(video.ended?0:logicalTime());video.paused?video.play().catch(playbackRejected):video.pause();};
 back30.onclick=()=>{showControls();go(logicalTime()-30);};
 forward30.onclick=()=>{showControls();go(logicalTime()+30);};
-video.addEventListener("playing",()=>{needsPlayGesture=false;msg("");togglePlay.textContent="Pause";scheduleControlsHide();});
-video.addEventListener("pause",()=>{if(!preparing&&nativeHls&&!usingDirect()&&started&&video.readyState>=1)hlsResumeAt=logicalTime();togglePlay.textContent="Play";showControls();clearControlsTimer();});
+video.addEventListener("playing",()=>{needsPlayGesture=false;msg("");playButton(true);scheduleControlsHide();});
+video.addEventListener("pause",()=>{if(!preparing&&nativeHls&&!usingDirect()&&started&&video.readyState>=1)hlsResumeAt=logicalTime();playButton(false);showControls();clearControlsTimer();});
 video.addEventListener("play",()=>{if(hlsResumeAt!==null){const at=hlsResumeAt;hlsResumeAt=null;go(at>=totalDuration-0.1?0:at);}});
 video.addEventListener("waiting",()=>{if(started&&!video.paused)msg("Buffering…");});
 video.addEventListener("error",()=>{if(preparing)return;const e=video.error;msg("Playback failed"+(e?` (browser error ${e.code})`:"")+". Open Playback details or /transcoder-status.");if(lastReport)playbackReport(lastReport);});
@@ -182,7 +187,7 @@ document.querySelectorAll('input[name="qualityMode"]').forEach(radio=>{
  radio.addEventListener("change",()=>{
   showControls();if(!radio.checked)return;
   const wantLow=radio.value==="low";if(wantLow===lowBandwidth)return;
-  const t=logicalTime();lowBandwidth=wantLow;started=false;logicalOffset=0;start(t);
+  const t=logicalTime(),wasStarted=started;lowBandwidth=wantLow;started=false;logicalOffset=0;if(wasStarted)start(t);
  });
 });
 if(audioSelect)audioSelect.onchange=()=>{showControls();if(started&&!usingDirect())go(logicalTime());};
@@ -201,5 +206,5 @@ document.addEventListener("fullscreenchange",updateFullscreenState);
 document.addEventListener("webkitfullscreenchange",updateFullscreenState);
 video.addEventListener("webkitbeginfullscreen",updateFullscreenState);
 video.addEventListener("webkitendfullscreen",updateFullscreenState);
-window.addEventListener("DOMContentLoaded",()=>{start(0);updateFullscreenState();});
+window.addEventListener("DOMContentLoaded",()=>{if(autoplay)start(0);else msg("Tap Play to start playback.");updateFullscreenState();});
 </script><script src="{{ url_for('static', filename='favorite.js') }}" defer></script><script src="{{ url_for('static', filename='activity.js') }}" defer></script></body></html>

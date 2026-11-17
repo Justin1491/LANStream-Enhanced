@@ -88,6 +88,7 @@ def load_settings() -> dict[str, str]:
         "directory_scan_timeout": "30",
         "automatic_indexing": "true",
         "automatic_thumbnails": "true",
+        "autoplay": "true",
         "library_cleanup_enabled": "false",
         "thumbnail_workers": "2",
         "low_bandwidth_resolution": "854x480",
@@ -1663,6 +1664,7 @@ def player(root_index, relpath):
     d = duration_seconds(info)
     return render_template(
         "player.html", root_index=root_index, relpath=relpath,
+        autoplay=bool_setting(SETTINGS['autoplay']),
         filename=source.name, duration=d, duration_text=fmt_duration(d),
         audios=audios, subtitles=subtitles,
         native=direct_playback_ok(source, info, audios),
@@ -2386,14 +2388,14 @@ def activity_api():
     return '', 204
 
 
-def save_automatic_thumbnail_setting(enabled):
+def save_boolean_setting(key, enabled):
     with SETTINGS_WRITE_LOCK:
         lines = CONFIG_FILE.read_text(encoding='utf-8').splitlines(keepends=True) if CONFIG_FILE.exists() else []
         value = 'true' if enabled else 'false'
-        setting = 'automatic_thumbnails=' + value
+        setting = key + '=' + value
         found = False
         for index, line in enumerate(lines):
-            if line.split('=', 1)[0].strip().lower() == 'automatic_thumbnails':
+            if line.split('=', 1)[0].strip().lower() == key:
                 ending = '\n' if line.endswith('\n') else ''
                 lines[index] = setting + ending
                 found = True
@@ -2407,8 +2409,9 @@ def save_automatic_thumbnail_setting(enabled):
             temporary.replace(CONFIG_FILE)
         finally:
             temporary.unlink(missing_ok=True)
-        SETTINGS['automatic_thumbnails'] = value
-        automatic_thumbnails.set_enabled(enabled)
+        SETTINGS[key] = value
+        if key == 'automatic_thumbnails':
+            automatic_thumbnails.set_enabled(enabled)
 
 
 @app.route('/settings')
@@ -2424,11 +2427,11 @@ def settings_api():
         if not isinstance(data, dict):
             abort(400)
         action = data.get('action')
-        if action == 'enable_thumbnails':
+        if action in {'enable_thumbnails', 'enable_autoplay'}:
             if type(data.get('enabled')) is not bool:
                 abort(400)
             try:
-                save_automatic_thumbnail_setting(data['enabled'])
+                save_boolean_setting('autoplay' if action == 'enable_autoplay' else 'automatic_thumbnails', data['enabled'])
             except OSError:
                 return jsonify(error='Could not save configuration. Check that it is writable.'), 503
         elif action == 'scan_storage':
@@ -2442,7 +2445,8 @@ def settings_api():
     labels = {root_id(root): root_label(root, indexes[root_id(root)]) for root in roots}
     for item in indexing:
         item['label'] = labels[item['root_id']]
-    return jsonify(thumbnails=automatic_thumbnails.status(), scheduler=image_scheduler.status(),
+    return jsonify(playback={'autoplay': bool_setting(SETTINGS['autoplay'])},
+                   thumbnails=automatic_thumbnails.status(), scheduler=image_scheduler.status(),
                    indexing=indexing, storage=storage_status.status(), updates=update_status.status())
 
 

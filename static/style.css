@@ -50,7 +50,19 @@ html,body{min-height:100%;background:var(--bg)!important;color:var(--text)!impor
 }
 .player-control-row{width:100%;display:flex;gap:8px;align-items:center;min-width:0}
 .player-transport{display:flex;gap:8px;flex:none}
-.player-transport button{min-width:44px;padding:8px 11px}
+.player-transport button{min-width:44px;min-height:44px;padding:8px 11px}
+.player-transport svg{display:block;margin:auto;pointer-events:none}
+#togglePlay[aria-label="Play"] .pause-icon,#togglePlay[aria-label="Pause"] .play-icon{display:none}
+.player-top button,.player-back,.detail-info button,.detail-info .action-link{min-width:44px;min-height:44px;touch-action:manipulation}
+.player-back{display:flex;align-items:center}
+.player-controls select,.player-controls input[type=range],.quality-mode label{min-height:44px}
+.quality-mode label{min-width:44px;padding:4px}
+.player-shell :focus-visible,.detail-info :focus-visible,.settings :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.danger-action{color:var(--danger)}
+#deleteDialog{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:24px;width:min(520px,92vw);max-height:85dvh;overflow:auto}
+#deleteDialog::backdrop{background:#000a}
+#deleteName,#deleteStatus,#deleteDialogStatus{overflow-wrap:anywhere}
+.delete-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px;margin-top:18px}
 .player-controls input[type=range]{width:100%;min-width:0;accent-color:var(--accent)}
 .player-controls select{width:auto;min-width:90px;max-width:210px;margin:0;padding:8px 9px}
 .duration-label,#currentLabel{white-space:nowrap;font-variant-numeric:tabular-nums}

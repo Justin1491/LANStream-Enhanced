@@ -197,6 +197,40 @@ class CleanupRoutes(unittest.TestCase):
             self.assertIn('selection_token',row)
             self.assertEqual(self.rename(row, 'from Details')['status'], 'renamed')
 
+    def test_detail_delete_uses_existing_signed_preview_and_recoverable_trash(self):
+        import html
+        import re
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='true'), \
+                patch.object(self.server, 'probe', return_value={'streams':[], 'format':{}}), \
+                patch.object(self.server.image_scheduler, 'submit'):
+            page = self.client.get('/video/0/sample%20clip.mp4').get_data(as_text=True)
+            self.assertIn('id="deleteFile"', page)
+            token = html.unescape(re.search(r'id="deleteFile"[^>]*data-token="([^"]+)"', page)[1])
+            job = self.post(dict(action='preview_move',items=[dict(selection_token=token)],operation_id=str(uuid.uuid4())))
+            ready = self.wait_job(job.get_json())['results'][0]
+            self.assertEqual(ready['status'], 'ready')
+            self.assertTrue((self.root / 'sample clip.mp4').exists())
+            job = self.post(dict(action='move',items=[dict(confirmation_token=ready['confirmation_token'])],operation_id=str(uuid.uuid4())))
+            self.assertEqual(self.wait_job(job.get_json())['results'][0]['status'], 'moved')
+            self.assertFalse((self.root / 'sample clip.mp4').exists())
+            self.assertEqual(self.client.get('/api/cleanup/trash').get_json()['items'][0]['name'], 'sample clip.mp4')
+        with patch.dict(self.server.SETTINGS, library_cleanup_enabled='false'), \
+                patch.object(self.server, 'probe', return_value={'streams':[], 'format':{}}), \
+                patch.object(self.server.image_scheduler, 'submit'):
+            (self.root / 'sample clip.mp4').write_bytes(b'fictional sample')
+            self.assertNotIn(b'id="deleteFile"', self.client.get('/video/0/sample%20clip.mp4').data)
+
+    def test_player_hides_single_audio_without_losing_transcode_track(self):
+        for count in (0, 1, 2):
+            streams = [{'codec_type':'audio','index':i+2,'codec_name':'aac'} for i in range(count)]
+            with patch.object(self.server, 'probe', return_value={'streams':streams,'format':{}}), \
+                    patch.dict(self.server.SETTINGS, autoplay='false'):
+                page = self.client.get('/play/0/sample%20clip.mp4').get_data(as_text=True)
+                self.assertEqual('<select id="audioSelect"' in page, count > 1)
+                if count == 1:
+                    self.assertIn('id="audioSelect" value="2"', page)
+                self.assertIn('const autoplay=false;', page)
+
     def test_page_and_cached_table_without_filesystem_or_probe(self):
         self.assertEqual(self.client.get('/cleanup').status_code, 200)
         with patch('os.scandir', side_effect=AssertionError('enumerated media')), \

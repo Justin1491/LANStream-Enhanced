@@ -39,7 +39,7 @@ try:
         assert touch.call_count == 1
         assert client.get('/settings').status_code == 200
         assert touch.call_count == 2
-    for payload in ([], {'action':'bad'}, {'action':'enable_thumbnails','enabled':'false'}):
+    for payload in ([], {'action':'bad'}, {'action':'enable_thumbnails','enabled':'false'}, {'action':'enable_autoplay','enabled':'false'}):
         assert client.post('/api/settings', json=payload, headers=headers).status_code == 400
     data = client.get('/api/settings').get_json()
     assert {'thumbnails','scheduler','indexing','storage','updates'} <= data.keys()
@@ -53,6 +53,15 @@ try:
         assert client.post('/api/settings', json={'action':'enable_thumbnails','enabled':True}, headers=headers).status_code == 503
     assert app.automatic_thumbnails.status()['enabled'] is False
     assert app.CONFIG_FILE.read_text(encoding='utf-8') == text
+    assert data['playback']['autoplay'] is True
+    assert client.post('/api/settings', json={'action':'enable_autoplay','enabled':False}).status_code == 403
+    assert client.post('/api/settings', json={'action':'enable_autoplay','enabled':False}, headers=headers).status_code == 200
+    assert client.get('/api/settings').get_json()['playback']['autoplay'] is False
+    assert app.load_settings()['autoplay'] == 'false'
+    assert app.CONFIG_FILE.read_text(encoding='utf-8') == 'autoplay=false\n' + text
+    with patch.object(Path, 'replace', side_effect=OSError('read only')):
+        assert client.post('/api/settings', json={'action':'enable_autoplay','enabled':True}, headers=headers).status_code == 503
+    assert app.SETTINGS['autoplay'] == 'false'
 finally:
     app.automatic_thumbnails.close(wait=True)
     app.storage_status.close()

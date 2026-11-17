@@ -99,6 +99,10 @@ class DirectoryIndex:
                 CREATE TABLE IF NOT EXISTS media_metadata(root TEXT,rel TEXT,size INTEGER,mtime REAL,
                     fingerprint TEXT,duration REAL,status TEXT,attempted REAL,error TEXT,
                     PRIMARY KEY(root,rel));
+                CREATE INDEX IF NOT EXISTS entries_path_lookup ON entries(root,casefold(rel));
+                CREATE INDEX IF NOT EXISTS favorites_path_lookup ON favorites(root,casefold(rel));
+                CREATE INDEX IF NOT EXISTS metadata_path_lookup ON media_metadata(root,casefold(rel));
+                CREATE INDEX IF NOT EXISTS folders_path_lookup ON folders(root,casefold(directory));
                 UPDATE crawls SET paused=1;
                 UPDATE crawl_frontier SET state='pending' WHERE state='scanning';
                 PRAGMA user_version=1;
@@ -703,7 +707,7 @@ class DirectoryIndex:
                 yield dict(root_id=row['root'], rel=row['rel'], size=row['size'], mtime=row['mtime'], version=row['version'])
             after = rows[-1]['root'], rows[-1]['rel']
 
-    def _invalidate_path(self, physical, keep=None):
+    def _path_aliases(self, physical):
         aliases = []
         for rid, path in self._known_roots.items():
             try:
@@ -717,15 +721,21 @@ class DirectoryIndex:
                                           'ORDER BY updated DESC,directory LIMIT 1', (rid, directory.casefold())).fetchone()
                 if folder:
                     directory = folder['directory']
-            sql = 'DELETE FROM entries WHERE root=? AND casefold(rel)=?'
+            aliases.append((rid, path, alias, directory))
+        return aliases
+
+    def _invalidate_path(self, physical, keep=None):
+        aliases = self._path_aliases(physical)
+        for rid, path, alias, directory in aliases:
+            # SQLite can otherwise choose a root-wide index scan for these mutations.
+            sql = 'DELETE FROM entries INDEXED BY entries_path_lookup WHERE root=? AND casefold(rel)=?'
             self._db.execute(sql + (' AND NOT (root=? AND directory=? AND version=?)' if keep else ''),
                              (rid, alias.casefold(), *keep) if keep else (rid, alias.casefold()))
-            self._db.execute('DELETE FROM media_metadata WHERE root=? AND casefold(rel)=?', (rid, alias.casefold()))
-            self._db.execute('UPDATE folders SET updated=0 WHERE root=? AND casefold(directory)=?', (rid, directory.casefold()))
+            self._db.execute('DELETE FROM media_metadata INDEXED BY metadata_path_lookup WHERE root=? AND casefold(rel)=?', (rid, alias.casefold()))
+            self._db.execute('UPDATE folders INDEXED BY folders_path_lookup SET updated=0 WHERE root=? AND casefold(directory)=?', (rid, directory.casefold()))
             for key, job in self._jobs.items():
                 if key[0] == rid and key[1].casefold() == directory.casefold() and (not keep or key != keep[:2]):
                     job['expired'] = True
-            aliases.append((rid, path, alias, directory))
         return aliases
 
     def hide_file(self, root, relative, hidden=True, *, fingerprint=None, pending=False):
@@ -770,13 +780,17 @@ class DirectoryIndex:
         physical = _path_key(root, relative)
         name = Path(renamed_to).name
         with self._condition, self._db:
-            entries = self._db.execute('SELECT e.* FROM entries e JOIN index_roots r ON e.root=r.root '
-                                       'JOIN folders f ON e.root=f.root AND e.directory=f.directory AND e.version=f.version '
-                                       'WHERE path_key(r.path,e.rel)=?', (physical,)).fetchall()
-            favorites = self._db.execute('SELECT f.* FROM favorites f JOIN index_roots r ON f.root=r.root '
-                                         'WHERE path_key(r.path,f.rel)=?', (physical,)).fetchall()
-            metadata = self._db.execute('SELECT m.* FROM media_metadata m JOIN index_roots r ON m.root=r.root '
-                                        'WHERE path_key(r.path,m.rel)=?', (physical,)).fetchall()
+            entries, favorites, metadata = [], [], []
+            for rid, path, alias, directory in self._path_aliases(physical):
+                # Restrict by indexed alias before checking the platform's exact physical key.
+                params = (rid, alias.casefold(), path, physical)
+                entries.extend(self._db.execute('SELECT e.* FROM entries e JOIN folders f '
+                    'ON e.root=f.root AND e.directory=f.directory AND e.version=f.version '
+                    'WHERE e.root=? AND casefold(e.rel)=? AND path_key(?,e.rel)=?', params).fetchall())
+                favorites.extend(self._db.execute('SELECT * FROM favorites '
+                    'WHERE root=? AND casefold(rel)=? AND path_key(?,rel)=?', params).fetchall())
+                metadata.extend(self._db.execute('SELECT * FROM media_metadata '
+                    'WHERE root=? AND casefold(rel)=? AND path_key(?,rel)=?', params).fetchall())
             destination = _path_key(root, renamed_to)
             tombstone = self._db.execute('SELECT fingerprint FROM hidden_files WHERE path=? AND pending=0', (destination,)).fetchone()
             if tombstone and tombstone['fingerprint'] and json.loads(tombstone['fingerprint']) != fingerprint:

@@ -64,3 +64,18 @@ test('queued rename waits for the worker and disables duplicate submits and dism
   finish({state:'complete',results:[{status:'renamed',name:'clip.mp4'}]});await saving;
   assert.equal(refreshed,true);assert.equal(p.elements.renameDialog.open,false);
 });
+
+test('completed rename distinguishes slow results refresh from the file operation', async () => {
+  let finish;
+  const refresh = new Promise(resolve => finish = resolve);
+  const p = page();
+  p.open({name:'clip.mp4',selection_token:'signed'}, () => refresh);
+  const saving = submit(p);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.elements.renameStatus.textContent, 'Renamed. Refreshing results…');
+  assert.equal(p.elements.renameDialog.open, true);
+  assert.equal(p.elements.renameSave.disabled, true);
+  finish();
+  await saving;
+  assert.equal(p.elements.renameDialog.open, false);
+});

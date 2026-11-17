@@ -13,6 +13,7 @@
   function render(data) {
     const t = data.thumbnails || {}, s = data.scheduler || {}, storage = data.storage || {}, update = data.updates || {};
     if (!busy) $('automaticThumbnails').checked = !!t.enabled;
+    if (!busy) $('autoplay').checked = !!data.playback?.autoplay;
     const states = {
       disabled: ['Automatic preparation is off', 'Enable it to prepare thumbnails when LANStream is idle.'],
       waiting: ['Waiting for an idle opportunity', s.paused ? 'Thumbnail work is paused or playback is active.' : 'Preparation starts after 60 seconds without users, when playback and other thumbnail work allow.'],
@@ -90,6 +91,7 @@
     finally { busy = false; await refresh(); }
   }
   $('automaticThumbnails').addEventListener('change', e => action({action: 'enable_thumbnails', enabled: e.target.checked}));
+  $('autoplay').addEventListener('change', e => action({action: 'enable_autoplay', enabled: e.target.checked}));
   $('scanStorage').addEventListener('click', () => action({action: 'scan_storage'}));
   $('checkUpdates').addEventListener('click', () => action({action: 'check_updates'}));
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });

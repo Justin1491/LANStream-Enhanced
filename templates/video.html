@@ -13,6 +13,14 @@
 <h1>{{ filename }}</h1>
 {% if rename_item %}<button type="button" data-rename-file data-name="{{ rename_item.name }}" data-token="{{ rename_item.selection_token }}">Rename</button>{% endif %}
 {% include 'favorite_button.html' %}
+{% if rename_item %}<button id="deleteFile" type="button" class="danger-action" data-token="{{ rename_item.selection_token }}" data-name="{{ filename }}" data-folder="{{ url_for('browse', root_index=root_index, relpath=parent_rel) }}">Delete file</button>
+<p id="deleteStatus" role="status" aria-live="polite"></p>
+<dialog id="deleteDialog" aria-labelledby="deleteTitle" aria-describedby="deleteHint">
+<h2 id="deleteTitle">Delete this file?</h2><p id="deleteName"></p>
+<p id="deleteHint">The file will move to recoverable Trash in Library Cleanup. You can restore it there. Disk space is kept until you delete it permanently.</p>
+<p id="deleteDialogStatus" role="status" aria-live="polite"></p>
+<div class="delete-actions"><button id="deleteCancel" type="button">Cancel</button><button id="deleteConfirm" type="button" class="danger-action">Move to Trash</button></div>
+</dialog>{% endif %}
 <dl>
 <dt>Size</dt><dd>{{ size }}</dd>
 <dt>Runtime</dt><dd>{{ duration_text }}</dd>
@@ -26,6 +34,7 @@
 </div></div>
 {% endblock %}
 {% block scripts %}
+{% if rename_item %}<script src="{{ url_for('static', filename='detail-delete.js') }}" defer></script>{% endif %}
 <script>
 const poster=document.getElementById("poster");
 if(poster&&poster.classList.contains("pending")){

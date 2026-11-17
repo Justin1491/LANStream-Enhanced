@@ -36,6 +36,63 @@ class CleanupIndexTests(unittest.TestCase):
         info = path.stat()
         return {key: getattr(info, 'st_' + key) for key in ('size', 'mtime', 'mtime_ns', 'ctime_ns', 'ino', 'dev')}
 
+    def test_rename_cost_does_not_scan_unrelated_cached_files(self):
+        path = self.file('clip.mp4')
+        self.scan()
+        before = self.fingerprint(path)
+        self.index.set_favorite('alice', self.root, path.name, 'video', path.name, True)
+        self.index.save_duration(self.root, path.name, before, 12.5)
+        rid = root_id(self.root)
+        with self.index._lock, self.index._db:
+            version = self.index._db.execute('SELECT version FROM folders WHERE root=? AND directory=?', (rid, '')).fetchone()[0]
+            # Cached-only siblings exercise query cost without thousands of filesystem writes.
+            self.index._db.executemany('INSERT INTO entries VALUES(?,?,?,?,?,?,?,?,?)',
+                ((rid, '', version, f'other-{i}.mp4', f'other-{i}.mp4', 'video', 1, 1., f'other-{i}.mp4') for i in range(5000)))
+            self.index._db.executemany('INSERT INTO folders VALUES(?,?,?,?)',
+                ((rid, f'folder-{i}', 'old', 1.) for i in range(5000)))
+            self.index._db.executemany('INSERT INTO favorites VALUES(?,?,?,?,?)',
+                (('alice', rid, f'other-{i}.mp4', 'video', f'other-{i}.mp4') for i in range(5000)))
+            self.index._db.executemany('INSERT INTO media_metadata VALUES(?,?,?,?,?,?,?,?,?)',
+                ((rid, f'other-{i}.mp4', 1, 1., '{}', 1., 'ready', 1., None) for i in range(5000)))
+        target = path.with_name('renamed.mp4')
+        path.rename(target)
+        instructions = 0
+
+        def progress():
+            nonlocal instructions
+            instructions += 100
+            return 0
+
+        with patch.object(self.index, '_schedule'), self.index._lock:
+            self.index._db.set_progress_handler(progress, 100)
+            try:
+                self.index.rename_file(self.root, path.name, target.name, before=before, fingerprint=self.fingerprint(target))
+            finally:
+                self.index._db.set_progress_handler(None, 0)
+        self.assertLess(instructions, 5000, 'Renaming one file must use indexed lookups, not scan the library')
+        rows = self.index.cleanup([self.root], query='renamed')['items']
+        self.assertEqual([(r['rel'], r['duration']) for r in rows], [('renamed.mp4', 12.5)])
+        self.assertEqual(self.index.favorites('alice', [self.root], page_size=1)['total'], 5001)
+        self.assertEqual(self.index.cleanup([self.root])['total'], 5001)
+
+    def test_rename_upgrades_existing_cache_without_losing_saved_data(self):
+        path = self.file('clip.mp4')
+        self.scan()
+        before = self.fingerprint(path)
+        self.index.set_favorite('alice', self.root, path.name, 'video', path.name, True)
+        self.index.save_duration(self.root, path.name, before, 12.5)
+        with self.index._lock, self.index._db:
+            for name in ('entries_path_lookup', 'favorites_path_lookup', 'metadata_path_lookup', 'folders_path_lookup'):
+                self.index._db.execute('DROP INDEX ' + name)
+        self.index.close()
+        self.index = DirectoryIndex(self.db, lambda suffix: 'video')
+        target = path.with_name('renamed.mp4')
+        path.rename(target)
+        with patch.object(self.index, '_schedule'):
+            self.index.rename_file(self.root, path.name, target.name, before=before, fingerprint=self.fingerprint(target))
+        favorite = self.index.favorites('alice', [self.root])['items'][0]
+        self.assertEqual((favorite['rel'], favorite['duration']), ('renamed.mp4', 12.5))
+
     def test_duration_persists_and_changed_snapshot_invalidates(self):
         path = self.file('clip.mp4')
         self.scan()

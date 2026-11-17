@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const template = fs.readFileSync(path.join(__dirname, '../templates/player.html'), 'utf8');
 const script = template.match(/<script>([\s\S]*?)<\/script>/)[1];
 
-function player(direct = true, nativeHls = false, fetcher = async () => ({ok:true, json:async () => ({state:'ready'})})) {
+function player(direct = true, nativeHls = false, fetcher = async () => ({ok:true, json:async () => ({state:'ready'})}), autoplay = true) {
   const elements = {};
   for (const id of ['playerShell', 'video', 'playerMessage', 'playerControls', 'togglePlay',
     'back30', 'forward30', 'seek', 'currentLabel', 'volume', 'fullscreenTop',
@@ -35,6 +35,7 @@ function player(direct = true, nativeHls = false, fetcher = async () => ({ok:tru
   const window = Object.assign(new EventTarget(), {setTimeout, clearTimeout});
   const context = vm.createContext({document, window, fetch:fetcher, AbortController});
   vm.runInContext(script.replace('{{ "true" if native else "false" }}', String(direct))
+    .replace('{{ autoplay|tojson }}', String(autoplay))
     .replace('{{ duration }}', '60').replace(/{{.*?}}/g, '"/fixture"'), context);
   return {document, window, qualityModes, ...elements};
 }
@@ -141,7 +142,7 @@ for (const direct of [true, false]) {
     p.togglePlay.onclick();
     await new Promise(setImmediate);
     assert.equal(p.playerMessage.classList.contains('hidden'), true);
-    assert.equal(p.togglePlay.textContent, 'Pause');
+    assert.equal(p.togglePlay['aria-label'], 'Pause');
     p.video.dispatchEvent(new Event('waiting'));
     assert.equal(p.playerMessage.textContent, 'Buffering…', 'active playback should still report buffering');
   });
@@ -159,6 +160,30 @@ test('paused video does not report buffering and media failures retain their err
   p.video.dispatchEvent(new Event('waiting'));
   assert.match(p.playerMessage.textContent, /Playback failed \(browser error 4\)/);
 });
+
+for (const direct of [true, false]) {
+  test(`${direct ? 'direct' : 'transcoded'} autoplay off waits for Play, including quality selection`, async () => {
+    let requests = 0, plays = 0;
+    const p = player(direct, false, async () => { requests++; }, false);
+    p.video.play = () => { plays++; return Promise.resolve(); };
+    p.window.dispatchEvent(new Event('DOMContentLoaded'));
+    assert.equal(p.video.src, undefined);
+    assert.equal(plays, 0);
+    assert.equal(requests, 0);
+    assert.equal(p.playerMessage.textContent, 'Tap Play to start playback.');
+    const low = p.qualityModes.find(radio => radio.value === 'low');
+    low.checked = true; low.dispatchEvent(new Event('change'));
+    assert.equal(plays, 0);
+    assert.equal(p.video.src, undefined);
+    p.togglePlay.onclick();
+    assert.equal(plays, 1);
+    assert.match(p.video.src, /low=1$/);
+    p.video.dispatchEvent(new Event('playing'));
+    assert.equal(p.togglePlay['aria-label'], 'Pause');
+    p.video.dispatchEvent(new Event('pause'));
+    assert.equal(p.togglePlay['aria-label'], 'Play');
+  });
+}
 
 test('Normal and Low Bandwidth preserve position when switching and seeking', () => {
   const p = player(false);

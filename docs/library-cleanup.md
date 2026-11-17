@@ -22,6 +22,8 @@ Use **Rename** beside a file in Cleanup or Browse (including Details), or on a v
 
 Renames stay in the same folder, never overwrite another file, and reject invalid names, changed files, and files currently in use by LANStream. Favorites and saved duration metadata follow the new name. Existing external links to the old filename need updating.
 
+Renaming updates the affected cached paths through indexed lookups, including overlapping library roots, while the folder rescans in the background. After the file operation finishes, **Renamed. Refreshing results…** distinguishes the list refresh from the rename itself. Network storage and earlier queued file operations can still add delay.
+
 ## Prepare durations
 
 **Prepare durations** reads videos in the chosen folder scope, including subfolders when selected, irrespective of filename, file-type, or group filters. Results are saved across restarts. Unknown durations display an em dash and sort last in both directions in All files. Duration grouping excludes unavailable values. Sorting, grouping, searching, or opening Cleanup never starts FFprobe. Opening a video normally also saves valid duration metadata from its existing probe.

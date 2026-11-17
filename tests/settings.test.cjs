@@ -13,7 +13,7 @@ function setup() {
     createElement: element, querySelector() { return {content: 'csrf-value'}; },
     addEventListener(event, fn) { this.listeners[event] = fn; }};
   const calls = [];
-  const data = {thumbnails: {enabled: true, state: 'waiting'}, scheduler: {pending: 2},
+  const data = {playback: {autoplay: true}, thumbnails: {enabled: true, state: 'waiting'}, scheduler: {pending: 2},
     indexing: [{label: 'Photos', running: true, completed: 4}],
     storage: {scanned: true, cache: {index: 1024}, system: {Runtime: 5}},
     updates: {current: null, latest: 'a'.repeat(40), checked: true}};
@@ -46,6 +46,17 @@ test('renders status and polls only when visible', async () => {
   assert.equal(page.calls.length, 1);
   page.document.hidden = false; page.poll(); await flush();
   assert.equal(page.calls.length, 2);
+});
+
+test('renders and saves autoplay through the existing CSRF-protected settings API', async () => {
+  const page = setup(); await flush();
+  assert.equal(page.nodes.autoplay.checked, true);
+  page.data.playback.autoplay = false;
+  await page.nodes.autoplay.listeners.change({target: {checked: false}});
+  const post = page.calls.find(call => call.options.method === 'POST');
+  assert.deepEqual(JSON.parse(post.options.body), {action:'enable_autoplay', enabled:false});
+  assert.equal(post.options.headers['X-LANStream-CSRF'], 'csrf-value');
+  assert.equal(page.nodes.autoplay.checked, false);
 });
 
 test('keeps preparation and request failures separate and uses only known waiting conditions', async () => {
