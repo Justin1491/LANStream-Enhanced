@@ -16,6 +16,9 @@ import time
 import io
 import math
 import zipfile
+from collections import OrderedDict
+from concurrent.futures import Future
+from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -575,7 +578,63 @@ def _viewer_cache_path(kind: str, root_index: int, root: Path, source: Path) -> 
     return base.with_name(f"{base.stem}.{stat.st_mtime_ns}-{stat.st_size}.jpg")
 
 
+_probe_lock = threading.Lock()
+_probe_cache = OrderedDict()
+_probe_pending = {}
+
+
 def probe(path: Path, *, runner=None) -> dict[str, Any]:
+    key = os.path.normcase(os.path.abspath(path))
+    with CLEANUP_ACTIVITY_LOCK:
+        cleanup = globals().get('cleanup_service')
+        if cleanup and cleanup.trash.is_busy(path):
+            raise RuntimeError('This file has a pending cleanup operation.')
+        ACTIVE_PROBES[key] = ACTIVE_PROBES.get(key, 0) + 1
+    try:
+        # Idle runners must retain independent cancellation instead of sharing foreground work.
+        return _run_probe(path, runner=runner) if runner is not None else _cached_probe(path)
+    finally:
+        with CLEANUP_ACTIVITY_LOCK:
+            ACTIVE_PROBES[key] -= 1
+            if not ACTIVE_PROBES[key]:
+                ACTIVE_PROBES.pop(key)
+
+
+def _cached_probe(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    # shortcut: unchanged file metadata can hide changes for five minutes; use stronger versions if available.
+    key = (FFPROBE, str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    with _probe_lock:
+        entry = _probe_cache.get(key)
+        if entry and entry[0] > time.monotonic():
+            _probe_cache.move_to_end(key)
+            return deepcopy(entry[1])
+        _probe_cache.pop(key, None)
+        pending = _probe_pending.get(key)
+        if pending is None:
+            pending = _probe_pending[key] = Future()
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        return deepcopy(pending.result())
+    try:
+        value = _run_probe(path)
+    except BaseException as exc:
+        with _probe_lock:
+            _probe_pending.pop(key)
+            pending.set_exception(exc)
+        raise
+    with _probe_lock:
+        _probe_cache[key] = (time.monotonic() + 300, value)
+        while len(_probe_cache) > 128:
+            _probe_cache.popitem(last=False)
+        _probe_pending.pop(key)
+        pending.set_result(value)
+    return deepcopy(value)
+
+
+def _run_probe(path: Path, *, runner=None) -> dict[str, Any]:
     cmd = [
         FFPROBE, "-v", "error",
         "-show_entries",
@@ -584,24 +643,12 @@ def probe(path: Path, *, runner=None) -> dict[str, Any]:
         "stream_tags=language,title",
         "-of", "json", str(path),
     ]
-    key = os.path.normcase(os.path.abspath(path))
-    with CLEANUP_ACTIVITY_LOCK:
-        cleanup = globals().get('cleanup_service')
-        if cleanup and cleanup.trash.is_busy(path):
-            raise RuntimeError('This file has a pending cleanup operation.')
-        ACTIVE_PROBES[key] = ACTIVE_PROBES.get(key, 0) + 1
-    try:
-        proc = (runner or subprocess.run)(cmd, capture_output=True, text=True, timeout=30,
-                              stdin=subprocess.DEVNULL,
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        if proc.returncode:
-            raise RuntimeError(proc.stderr.strip() or "ffprobe failed")
-        return json.loads(proc.stdout)
-    finally:
-        with CLEANUP_ACTIVITY_LOCK:
-            ACTIVE_PROBES[key] -= 1
-            if not ACTIVE_PROBES[key]:
-                ACTIVE_PROBES.pop(key)
+    proc = (runner or subprocess.run)(cmd, capture_output=True, text=True, timeout=30,
+                          stdin=subprocess.DEVNULL,
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    if proc.returncode:
+        raise RuntimeError(proc.stderr.strip() or "ffprobe failed")
+    return json.loads(proc.stdout)
 
 
 def probe_with_saved_duration(root, relative, source):

@@ -33,8 +33,9 @@ class MediaProcessTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def test_probe_archive_and_encoder_launch_options(self):
-        source = self.root / 'fictional.cbr'
         for platform in ('nt', 'posix'):
+            source = self.root / f'fictional-{platform}.cbr'
+            source.touch()
             with self.subTest(platform=platform), \
                  patch.object(self.server, 'os', SimpleNamespace(name=platform, path=os.path)), \
                  patch.object(self.server, 'SEVEN_ZIP', '7z'), \
