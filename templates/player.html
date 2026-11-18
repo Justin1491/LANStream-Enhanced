@@ -67,11 +67,11 @@ const hlsBase={{ url_for('hls_media',root_index=root_index,relpath=relpath)|tojs
 const hlsToken={{ hls_token|tojson }};
 const nativeHls=!!(video.canPlayType&&video.canPlayType('application/vnd.apple.mpegurl'));
 const subtitleBase={{ url_for('subtitle',root_index=root_index,relpath=relpath)|tojson }};
-let logicalOffset=0,started=false,dragging=false,lowBandwidth=false,controlsTimer=null,hlsSerial=0,hlsResumeAt=null,preparing=false,lastReport=null,needsPlayGesture=false;
+let logicalOffset=0,started=false,dragging=false,lowBandwidth=false,controlsTimer=null,hlsSerial=0,hlsResumeAt=null,directSeekAt=null,preparing=false,lastReport=null,needsPlayGesture=false;
 
 function fmt(sec){sec=Math.max(0,Math.floor(sec||0));const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h?`${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${m}:${String(s).padStart(2,"0")}`;}
 function usingDirect(){return nativePlayback&&!lowBandwidth;}
-function logicalTime(){return preparing?logicalOffset:usingDirect()?(video.currentTime||0):logicalOffset+(video.currentTime||0);}
+function logicalTime(){return preparing?logicalOffset:usingDirect()?(directSeekAt??(video.currentTime||0)):logicalOffset+(video.currentTime||0);}
 function audio(){return audioSelect?audioSelect.value:"";}
 function msg(t){message.textContent=t;message.classList.toggle("hidden",!t);}
 function playButton(playing){const label=playing?"Pause":"Play";togglePlay.setAttribute("aria-label",label);togglePlay.setAttribute("title",label);}
@@ -114,7 +114,7 @@ async function prepareHls(url,generation){
  }finally{window.clearTimeout(timeout);}
 }
 function transcode(at){
- hlsResumeAt=null;needsPlayGesture=false;
+ hlsResumeAt=null;directSeekAt=null;needsPlayGesture=false;
  logicalOffset=Math.max(0,Math.min(totalDuration,at));subtitles(logicalOffset);msg("Starting transcoded stream…");
  const generation=++hlsSerial,base=nativeHls?hlsBase:transcodeBase,stream=nativeHls?"stream="+hlsToken+"-"+generation+"&":"";
  const url=base+"?"+stream+"start="+encodeURIComponent(logicalOffset)+"&audio="+encodeURIComponent(audio())+(lowBandwidth?"&low=1":"");
@@ -128,14 +128,25 @@ function transcode(at){
 function start(at=0){
  hlsResumeAt=null;
  if(usingDirect()){
-  ++hlsSerial;preparing=false;
+  const generation=++hlsSerial;preparing=false;directSeekAt=at;
   if(!started){subtitles(0);video.src=nativeUrl;video.load();}
-  const playAt=()=>{try{video.currentTime=at;}catch(_){} video.play().catch(playbackRejected);};
+  const playAt=()=>{
+   if(generation!==hlsSerial||!usingDirect())return;
+   try{video.currentTime=directSeekAt;}catch(_){}
+   directSeekAt=null;
+   video.play().catch(playbackRejected);
+  };
   if(video.readyState>=1)playAt();else video.addEventListener("loadedmetadata",playAt,{once:true});
  }else transcode(at);
  started=true;
 }
-function go(t){t=Math.max(0,Math.min(totalDuration,t));if(!started)return start(t);usingDirect()?video.currentTime=t:transcode(t);}
+function go(t){
+ t=Math.max(0,Math.min(totalDuration,t));
+ if(!started)return start(t);
+ if(!usingDirect())return transcode(t);
+ if(directSeekAt!==null)directSeekAt=t;
+ else video.currentTime=t;
+}
 function fullscreenElement(){return document.fullscreenElement||document.webkitFullscreenElement||null;}
 function isFullscreen(){return fullscreenElement()===playerShell||!!video.webkitDisplayingFullscreen;}
 async function toggleFullscreen(){

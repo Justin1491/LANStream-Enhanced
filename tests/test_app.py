@@ -358,6 +358,86 @@ class ExplorerRoutes(unittest.TestCase):
         self.assertEqual(command[command.index('-ss') + 1], '12.500')
         self.assertIn('0:2', command)
 
+    def test_direct_head_preserves_headers_without_registering_playback(self):
+        tracker = self.server.StreamTracker()
+        with patch.object(self.server, 'stream_tracker', tracker):
+            for headers, status, length in (({}, 200, 10), ({'Range': 'bytes=2-5'}, 206, 4)):
+                with self.subTest(headers=headers):
+                    with self.client.head('/media/0/Café Clip 2.mp4', headers=headers) as response:
+                        self.assertEqual(response.status_code, status)
+                        self.assertEqual(response.content_length, length)
+                        self.assertEqual(response.data, b'')
+                        if status == 206:
+                            self.assertEqual(response.headers['Content-Range'], 'bytes 2-5/10')
+                    self.assertEqual(tracker.snapshot(), [])
+            with self.client.head('/media/0/Café Clip 10.mp4', headers={'Range': 'bytes=-1'}) as response:
+                self.assertEqual(response.status_code, 416)
+                self.assertEqual(response.headers['Content-Range'], 'bytes */0')
+            self.assertEqual(tracker.snapshot(), [])
+
+    def test_transcode_head_does_not_start_an_encoder_or_register_playback(self):
+        import io
+        from unittest.mock import Mock
+        proc = Mock(stdout=io.BytesIO(), stderr=io.BytesIO(), returncode=0)
+        proc.poll.return_value = 0
+        tracker = self.server.StreamTracker()
+        backend = {'ok': True, 'key': 'software', 'label': 'Software'}
+        with patch.object(self.server, 'stream_tracker', tracker), \
+             patch.object(self.server, 'selected_transcoder', return_value=backend) as select_backend, \
+             patch.object(self.server.hls_streams, 'own_process'), \
+             patch.object(self.server.hls_streams, 'get') as start_hls, \
+             patch.object(self.server.subprocess, 'Popen', return_value=proc) as start_mp4:
+            start_hls.return_value.wait_for.return_value.read_text.return_value = '#EXTM3U\n'
+            start_hls.return_value.process.poll.return_value = None
+            for route, mimetype in (
+                ('/transcode/0/Café Clip 2.mp4', 'video/mp4'),
+                ('/stream/0/Café Clip 2.mp4/video.mp4', 'video/mp4'),
+                ('/hls/0/Café Clip 2.mp4/index.m3u8?stream=' + 'a' * 32 + '-1',
+                 'application/vnd.apple.mpegurl'),
+            ):
+                with self.subTest(route=route), self.client.head(route) as response:
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.mimetype, mimetype)
+                    self.assertEqual(response.data, b'')
+                    self.assertNotIn('Content-Length', response.headers)
+            select_backend.assert_not_called()
+            start_mp4.assert_not_called()
+            start_hls.assert_not_called()
+            self.assertEqual(tracker.snapshot(), [])
+
+    def test_closing_unconsumed_media_response_releases_resources(self):
+        import io
+        from unittest.mock import Mock
+        tracker = self.server.StreamTracker()
+        proc = Mock(stdout=io.BytesIO(b'fixture-mp4'), stderr=io.BytesIO())
+        proc.poll.side_effect = lambda: proc.returncode
+        proc.returncode = None
+        proc.wait.side_effect = lambda **kwargs: setattr(proc, 'returncode', 1)
+        backend = {'ok': True, 'key': 'software', 'label': 'Software'}
+        with patch.object(self.server, 'stream_tracker', tracker), \
+             patch.object(self.server, 'selected_transcoder', return_value=backend), \
+             patch.object(self.server.hls_streams, 'own_process'), \
+             patch.object(self.server.subprocess, 'Popen', return_value=proc):
+            for url, headers in (
+                ('/media/0/Café Clip 2.mp4', {}),
+                ('/media/0/Café Clip 2.mp4', {'Range': 'bytes=2-5'}),
+                ('/stream/0/Café Clip 2.mp4/video.mp4', {}),
+            ):
+                with self.subTest(url=url, headers=headers), \
+                     self.server.app.test_request_context(url, headers=headers):
+                    with patch.object(self.server, 'active_profile', return_value={
+                        'roots': [self.root], 'excluded': [],
+                    }):
+                        response = self.server.app.dispatch_request()
+                        body = response(self.server.request.environ, lambda status, headers: None)
+                        body.close()
+                    remaining = tracker.snapshot()
+                    for stream in remaining:
+                        tracker.stop(stream['id'])
+                    self.assertEqual(remaining, [])
+            self.assertIsNotNone(proc.returncode)
+            self.assertTrue(proc.stdout.closed and proc.stderr.closed)
+
     def test_transcoded_player_url_identifies_mp4_and_preserves_source_path(self):
         import io
         import json

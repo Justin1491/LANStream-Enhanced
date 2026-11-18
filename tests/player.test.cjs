@@ -203,6 +203,37 @@ test('Normal and Low Bandwidth preserve position when switching and seeking', ()
   assert.match(p.video.src, /start=48&audio=$/);
 });
 
+test('direct metadata startup preserves the latest early seek', () => {
+  const p = player();
+  let plays = 0;
+  p.video.readyState = 0;
+  p.video.play = () => { plays++; return Promise.resolve(); };
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  p.seek.value = '24'; p.seek.onchange();
+  p.seek.value = '39'; p.seek.onchange();
+  p.video.readyState = 1;
+  p.video.dispatchEvent(new Event('loadedmetadata'));
+  assert.equal(p.video.currentTime, 39);
+  assert.equal(plays, 1);
+});
+
+test('direct metadata callback cannot seek or play a replacement stream', () => {
+  const p = player();
+  let plays = 0;
+  p.video.readyState = 0;
+  p.video.play = () => { plays++; return Promise.resolve(); };
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  p.seek.value = '24'; p.seek.onchange();
+  const low = p.qualityModes.find(radio => radio.value === 'low');
+  low.checked = true; low.dispatchEvent(new Event('change'));
+  p.video.currentTime = 2;
+  const before = plays;
+  p.video.readyState = 1;
+  p.video.dispatchEvent(new Event('loadedmetadata'));
+  assert.equal(p.video.currentTime, 2);
+  assert.equal(plays, before);
+});
+
 test('native HLS uses a fresh stream for seeking and quality changes', async () => {
   const p = player(false, true);
   p.video.play = () => Promise.resolve();

@@ -1,7 +1,9 @@
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -119,6 +121,48 @@ class CleanupIndexTests(unittest.TestCase):
         self.scan()
         self.assertIsNone(self.index.cleanup([self.root])['items'][0]['duration'])
 
+    def test_repeated_duration_save_does_not_write_or_change_attempt_time(self):
+        path = self.file('clip.mp4')
+        self.scan()
+        fingerprint = self.fingerprint(path)
+        for duration, error in ((12.5, ''), (None, 'Probe failed')):
+            with self.subTest(duration=duration):
+                self.assertTrue(self.index.save_duration(self.root, path.name, fingerprint, duration, error))
+                before = dict(self.index._db.execute('SELECT * FROM media_metadata').fetchone())
+                changes = self.index._db.total_changes
+                statements = []
+                self.index._db.set_trace_callback(statements.append)
+                try:
+                    self.assertTrue(self.index.save_duration(self.root, path.name, fingerprint, duration, error))
+                finally:
+                    self.index._db.set_trace_callback(None)
+                self.assertEqual(self.index._db.total_changes, changes)
+                self.assertEqual(dict(self.index._db.execute('SELECT * FROM media_metadata').fetchone()), before)
+                self.assertFalse(any(statement.startswith('BEGIN') for statement in statements))
+
+    def test_duration_save_updates_changed_metadata_and_keeps_entry_requirement(self):
+        path = self.file('clip.mp4')
+        self.scan()
+        fingerprint = self.fingerprint(path)
+        self.assertTrue(self.index.save_duration(self.root, path.name, fingerprint, 12.5))
+        changed_identity = dict(fingerprint, ino=fingerprint['ino'] + 1)
+        for current, duration, error in ((fingerprint, 14, ''), (changed_identity, 14, ''),
+                                         (changed_identity, None, 'Probe failed'),
+                                         (changed_identity, None, 'Retry failed'),
+                                         (changed_identity, 14, '')):
+            with self.subTest(duration=duration, error=error, fingerprint=current):
+                changes = self.index._db.total_changes
+                self.assertTrue(self.index.save_duration(self.root, path.name, current, duration, error))
+                self.assertGreater(self.index._db.total_changes, changes)
+                row = self.index._db.execute('SELECT duration,status,error FROM media_metadata').fetchone()
+                self.assertEqual(tuple(row), (duration, 'ready' if duration is not None else 'failed', error))
+        with self.index._lock, self.index._db:
+            self.index._db.execute('DELETE FROM entries')
+        changes = self.index._db.total_changes
+        self.assertFalse(self.index.save_duration(self.root, path.name, changed_identity, 14))
+        self.assertTrue(self.index.save_duration(self.root, path.name, changed_identity, 14, require_entry=False))
+        self.assertEqual(self.index._db.total_changes, changes)
+
     def test_trusted_duration_seed_rejects_unknown_invalid_and_reserved(self):
         path = self.file('clip.mp4')
         fingerprint = self.fingerprint(path)
@@ -156,6 +200,32 @@ class CleanupIndexTests(unittest.TestCase):
         self.index.save_duration(self.root, 'b.mp4', self.fingerprint(self.root / 'b.mp4'), 10)
         self.assertEqual([row['rel'] for row in self.index.duration_candidates([self.root], batch_size=1)], ['c.mp4'])
         self.assertEqual([row['rel'] for row in self.index.duration_candidates([self.root], retry_failed=True, batch_size=1)], ['a.mp4', 'c.mp4'])
+
+    def test_duration_candidates_rank_aliases_once_across_batches(self):
+        for number in range(20):
+            self.file(f'nested/clip{number:02}.mp4')
+        self.scan(relative='nested')
+        alias = self.root / 'nested'
+        self.scan(alias)
+        with patch('directory_index._path_key', wraps=directory_index._path_key) as path_key:
+            candidates = list(self.index.duration_candidates([self.root, alias], batch_size=1))
+        self.assertEqual(len(candidates), 20)
+        self.assertEqual(len({row['rel'].rsplit('/', 1)[-1] for row in candidates}), 20)
+        self.assertLessEqual(path_key.call_count, 80, 'Each batch must not rank the whole library again')
+
+    def test_duration_candidate_snapshot_releases_main_database_before_yielding(self):
+        for name in ('a.mp4', 'b.mp4', 'c.mp4'):
+            self.file(name)
+        self.scan()
+        candidates = self.index.duration_candidates([self.root], batch_size=1)
+        try:
+            self.assertEqual(next(candidates)['rel'], 'a.mp4')
+            self.index.save_duration(self.root, 'b.mp4', self.fingerprint(self.root / 'b.mp4'), 10)
+            with closing(sqlite3.connect(self.db, timeout=0)) as db:
+                self.assertEqual(db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0], 0)
+            self.assertEqual([row['rel'] for row in candidates], ['b.mp4', 'c.mp4'])
+        finally:
+            candidates.close()
 
     def test_grouping_after_scope_filter_and_before_paging_deduplicates_roots(self):
         for number in range(105):

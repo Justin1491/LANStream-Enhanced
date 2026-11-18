@@ -678,6 +678,7 @@ class DirectoryIndex:
         if duration is None and not error:
             error = 'Duration unavailable'
         fingerprint = {key: fingerprint[key] for key in ('size', 'mtime', 'mtime_ns', 'ctime_ns', 'ino', 'dev')}
+        values = (fingerprint['size'], fingerprint['mtime'], json.dumps(fingerprint), duration, status, str(error)[:500])
         with self._lock, self._db:
             if require_entry:
                 current = self._db.execute('SELECT 1 FROM entries e JOIN folders f ON e.root=f.root AND e.directory=f.directory AND e.version=f.version '
@@ -685,27 +686,33 @@ class DirectoryIndex:
                                           (root_id(root), relative, fingerprint['size'], fingerprint['mtime'])).fetchone()
                 if not current:
                     return False
+            saved = self._db.execute('SELECT size,mtime,fingerprint,duration,status,error FROM media_metadata WHERE root=? AND rel=?',
+                                     (root_id(root), relative)).fetchone()
+            if saved is not None and tuple(saved) == values:
+                return True
             self._db.execute('INSERT OR REPLACE INTO media_metadata VALUES(?,?,?,?,?,?,?,?,?)',
-                             (root_id(root), relative, fingerprint['size'], fingerprint['mtime'], json.dumps(fingerprint),
-                              duration, status, time.time(), str(error)[:500]))
+                             (root_id(root), relative, *values[:5], time.time(), values[5]))
         return True
 
     def duration_candidates(self, roots, *, excluded=None, scope_root=None, scope_relative='', recursive=True, retry_failed=False, batch_size=100):
         roots = self._register_roots(roots)
         sql, params, _ = self._cleanup_source(roots, excluded, scope_root, scope_relative, recursive, file_type='videos')
         batch_size = min(500, max(1, int(batch_size)))
-        after = ('', '')
-        while True:
-            with self._reader() as db:
-                rows = db.execute(sql + "SELECT root,rel,size,mtime,version FROM files WHERE (metadata_status='missing'"
-                                  + (" OR metadata_status='failed'" if retry_failed else '')
-                                  + ') AND (root>? OR (root=? AND rel>?)) ORDER BY root,rel LIMIT ?',
-                                  [*params, after[0], *after, batch_size]).fetchall()
-            if not rows:
-                return
-            for row in rows:
-                yield dict(root_id=row['root'], rel=row['rel'], size=row['size'], mtime=row['mtime'], version=row['version'])
-            after = rows[-1]['root'], rows[-1]['rel']
+        with self._reader() as db:
+            db.execute('PRAGMA temp_store=FILE')
+            db.execute('CREATE TEMP TABLE duration_candidates AS ' + sql
+                       + "SELECT root,rel,size,mtime,version FROM files WHERE metadata_status='missing'"
+                       + (" OR metadata_status='failed'" if retry_failed else ''), params)
+            # Release the library snapshot before slow probes; TEMP storage keeps Python memory bounded.
+            db.commit()
+            db.set_progress_handler(None, 0)
+            cursor = db.execute('SELECT * FROM duration_candidates ORDER BY root,rel')
+            while not self._closed:
+                rows = cursor.fetchmany(batch_size)
+                if not rows:
+                    return
+                for row in rows:
+                    yield dict(root_id=row['root'], rel=row['rel'], size=row['size'], mtime=row['mtime'], version=row['version'])
 
     def _path_aliases(self, physical):
         aliases = []

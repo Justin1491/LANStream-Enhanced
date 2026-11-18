@@ -25,7 +25,7 @@ from typing import Any
 
 from flask import (
     Flask, Response, abort, jsonify, redirect, render_template, request,
-    send_file, session, stream_with_context, url_for, make_response,
+    send_file, session, url_for, make_response,
 )
 from PIL import Image, ImageOps
 import pymupdf
@@ -1721,7 +1721,7 @@ def player(root_index, relpath):
 
 def parse_range_header(range_header: str | None, file_size: int) -> tuple[int, int] | None:
     """Return inclusive start/end for a single HTTP byte range."""
-    if not range_header or not range_header.startswith("bytes="):
+    if not range_header or not range_header.startswith("bytes=") or file_size == 0:
         return None
 
     value = range_header[6:].strip()
@@ -1761,62 +1761,34 @@ def parse_range_header(range_header: str | None, file_size: int) -> tuple[int, i
 def ranged_file_response(source: Path, mimetype: str):
     file_size = source.stat().st_size
     requested = request.headers.get("Range")
-
-    # Native playback startup may begin with a normal GET. Stream it in chunks
-    # rather than handing the entire file to Flask/Werkzeug.
-    if not requested:
-        stream_id = stream_tracker.start(
-            "direct",
-            source,
-            detail=f"full file, {file_size} bytes",
-        )
-
-        def whole_file():
-            try:
-                with source.open("rb", buffering=0) as fh:
-                    while True:
-                        chunk = fh.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        stream_tracker.add_bytes(stream_id, len(chunk))
-                        yield chunk
-            finally:
-                stream_tracker.stop(stream_id)
-
-        response = Response(stream_with_context(whole_file()), status=200, mimetype=mimetype)
-        response.headers["Content-Length"] = str(file_size)
-        response.headers["Accept-Ranges"] = "bytes"
-        response.headers["Cache-Control"] = "private, max-age=0"
+    headers = {"Accept-Ranges": "bytes"}
+    if requested:
+        byte_range = parse_range_header(requested, file_size)
+        if byte_range is None:
+            headers["Content-Range"] = f"bytes */{file_size}"
+            return Response(status=416, headers=headers)
+        start, end = byte_range
+        length = end - start + 1
+        detail = f"bytes {start}-{end}/{file_size}"
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    else:
+        start, length = 0, file_size
+        detail = f"full file, {file_size} bytes"
+    headers.update({"Content-Length": str(length), "Cache-Control": "private, max-age=0"})
+    response = Response(status=206 if requested else 200, mimetype=mimetype, headers=headers)
+    if request.method == "HEAD":
         return response
 
-    byte_range = parse_range_header(requested, file_size)
-    if byte_range is None:
-        response = Response(status=416)
-        response.headers["Content-Range"] = f"bytes */{file_size}"
-        response.headers["Accept-Ranges"] = "bytes"
-        return response
+    if requested:
+        app.logger.info("Native range request: %s %s", source.name, detail)
+    stream_id = stream_tracker.start("direct", source, detail=detail)
 
-    start, end = byte_range
-    length = end - start + 1
-
-    app.logger.info(
-        "Native range request: %s bytes %d-%d/%d",
-        source.name, start, end, file_size
-    )
-
-    stream_id = stream_tracker.start(
-        "direct",
-        source,
-        detail=f"bytes {start}-{end}/{file_size}",
-    )
-
-    def partial_file():
+    def read_file():
         remaining = length
         try:
             with source.open("rb", buffering=0) as fh:
-                # Jump directly to the requested offset, which is important
-                # for NAS-backed files.
-                fh.seek(start, os.SEEK_SET)
+                if start:
+                    fh.seek(start, os.SEEK_SET)
                 while remaining > 0:
                     chunk = fh.read(min(1024 * 1024, remaining))
                     if not chunk:
@@ -1827,16 +1799,9 @@ def ranged_file_response(source: Path, mimetype: str):
         finally:
             stream_tracker.stop(stream_id)
 
-    response = Response(
-        stream_with_context(partial_file()),
-        status=206,
-        mimetype=mimetype,
-        direct_passthrough=True,
-    )
-    response.headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-    response.headers["Content-Length"] = str(length)
-    response.headers["Accept-Ranges"] = "bytes"
-    response.headers["Cache-Control"] = "private, max-age=0"
+    response.response = read_file()
+    # The server can close the response before the generator's finally runs.
+    response.call_on_close(lambda: stream_tracker.stop(stream_id))
     return response
 
 
@@ -2146,14 +2111,6 @@ def transcode(root_index, relpath, hls=False):
 
     if request.args.get("hevc") == "1":
         abort(400, description="H.265 mode has been removed. Use Normal or Low Bandwidth.")
-    transcoder = selected_transcoder()
-    if not transcoder["ok"]:
-        app.logger.error("No usable transcoder: %s", transcoder["detail"])
-        return Response(
-            "No usable transcoder is available.\n" + transcoder["detail"],
-            status=503, mimetype="text/plain"
-        )
-
     try:
         start = float(request.args.get("start", "0"))
     except ValueError:
@@ -2166,10 +2123,32 @@ def transcode(root_index, relpath, hls=False):
         except ValueError:
             abort(400)
 
+    if hls and not math.isfinite(start):
+        abort(400)
+    stream_id = request.args.get('stream', '') if hls else None
+    if request.method == "HEAD":
+        if hls:
+            try:
+                hls_streams._validate_id(stream_id)
+            except ValueError as exc:
+                abort(400, description=str(exc))
+            mimetype = 'application/json' if request.args.get('prepare') == '1' else 'application/vnd.apple.mpegurl'
+            response = Response(mimetype=mimetype, headers={'Cache-Control': 'private, no-store'})
+        else:
+            response = Response(mimetype='video/mp4', headers={
+                'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no',
+            })
+        response.automatically_set_content_length = False
+        return response
+
+    transcoder = selected_transcoder()
+    if not transcoder["ok"]:
+        app.logger.error("No usable transcoder: %s", transcoder["detail"])
+        return Response(
+            "No usable transcoder is available.\n" + transcoder["detail"],
+            status=503, mimetype="text/plain"
+        )
     if hls:
-        if not math.isfinite(start):
-            abort(400)
-        stream_id = request.args.get('stream', '')
         low = request.args.get('low') == '1'
         stream = None
         try:
@@ -2233,57 +2212,41 @@ def transcode(root_index, relpath, hls=False):
             proc.stderr.close()
         raise
 
+    finished = False
+
     def generate():
-        cancelled = False
-        stderr = b""
+        nonlocal finished
+        assert proc.stdout is not None
         try:
-            assert proc.stdout is not None
-            while True:
-                chunk = proc.stdout.read(256 * 1024)
-                if not chunk:
-                    break
+            while chunk := proc.stdout.read(256 * 1024):
                 stream_tracker.add_bytes(stream_id, len(chunk))
                 yield chunk
-        except GeneratorExit:
-            # Normal browser behavior: seeking, changing tracks, navigating
-            # away, or closing playback abandons the old HTTP stream.
-            cancelled = True
-            raise
         except (BrokenPipeError, ConnectionResetError):
-            cancelled = True
+            return
+        finished = True
+
+    def close_stream():
+        from hls_streams import _stop_process
+        try:
+            code = proc.poll()
+            if code is None:
+                _stop_process(proc)
+            elif code and finished and proc.stderr:
+                stderr = proc.stderr.read()
+                app.logger.error("FFmpeg transcode exited %s: %s", code,
+                                 stderr.decode("utf-8", "replace")[-4000:])
         finally:
             stream_tracker.stop(stream_id)
-
-            if proc.poll() is None:
-                cancelled = True
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        pass
-
+            if proc.stdout:
+                proc.stdout.close()
             if proc.stderr:
-                try:
-                    stderr = proc.stderr.read()
-                except Exception:
-                    pass
+                proc.stderr.close()
 
-            # A terminated FFmpeg process is expected when the browser stops
-            # consuming a stream. Only report genuine unexpected failures.
-            if not cancelled and proc.returncode not in (0, None):
-                app.logger.error(
-                    "FFmpeg transcode exited %s: %s",
-                    proc.returncode, stderr.decode("utf-8", "replace")[-4000:]
-                )
-
-    response = Response(stream_with_context(generate()))
-    response.headers["Content-Type"] = "video/mp4"
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["X-Accel-Buffering"] = "no"
+    response = Response(generate(), mimetype='video/mp4', headers={
+        'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no',
+    })
+    # The server may close the response before it ever starts the generator.
+    response.call_on_close(close_stream)
     return response
 
 
