@@ -182,8 +182,8 @@ cleanup to make a pull succeed. Pulling source does not replace the installed EX
 
 ### Development environment and isolated run
 
-The Windows workflow uses Python 3.12 x64 and Node 22. Install the Python
-requirements into a virtual environment; Node is needed for the JS tests.
+Both Windows workflows use Python 3.12 x64 and Node 24. Install the Python
+requirements into a virtual environment and use Node 24 for the JavaScript tests.
 The source app finds FFmpeg/FFprobe beside `app.py` or on PATH. A local portable
 build expects the Windows tools under `tools/`; those EXEs/DLLs are ignored by Git.
 Use matching FFmpeg/FFprobe versions and a supported 7-Zip console backend.
