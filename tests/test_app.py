@@ -47,6 +47,64 @@ class ExplorerRoutes(unittest.TestCase):
         self.assertTrue(self.server.directory_index.wait_for_idle())
         return self.client.get(url)
 
+    def test_quest_https_redirect_precedes_login_and_preserves_deep_links(self):
+        client = self.server.app.test_client()
+        headers = {'User-Agent': 'Mozilla/5.0 (Linux; Android) OculusBrowser/40.0',
+                   'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate'}
+        path = '/play/0/Caf%C3%A9%20%252F%23%3F.mp4?vr180=1&name=a%2Fb%26c'
+        with patch.dict(self.server.SETTINGS, quest_https_origin='https://media.example.test:8443'):
+            for method, url in [('GET', '/'), ('HEAD', '/login?next=%2Fplay%2F0%2Fclip.mp4'),
+                                ('GET', path)]:
+                with self.subTest(method=method, url=url):
+                    response = client.open(url, method=method, headers=headers,
+                                           base_url='http://media.example.test:8061')
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(response.headers['Location'], 'https://media.example.test:8443' + url)
+                    self.assertEqual(response.headers['Cache-Control'], 'private, no-store')
+                    self.assertNotIn('Set-Cookie', response.headers)
+            for base_url, remote in [('https://other.example.test', '192.0.2.2'),
+                                     ('http://media.example.test:8443', '127.0.0.1'),
+                                     ('http://media.example.test:8443', '::1')]:
+                response = client.get('/login', headers=headers, base_url=base_url,
+                                      environ_overrides={'REMOTE_ADDR': remote})
+                self.assertEqual(response.status_code, 200)
+            response = client.get('/login', headers={**headers, 'X-Forwarded-Proto': 'https',
+                                                     'X-Forwarded-Host': 'media.example.test:8443'},
+                                  environ_overrides={'REMOTE_ADDR': '192.0.2.2'})
+            self.assertEqual(response.headers['Location'], 'https://media.example.test:8443/login')
+            response = client.get('/login', headers=headers,
+                                  base_url='http://media.example.test:8443',
+                                  environ_overrides={'REMOTE_ADDR': '192.0.2.2'})
+            self.assertEqual(response.headers['Location'], 'https://media.example.test:8443/login')
+            response = client.get(path, headers=headers,
+                                  environ_overrides={'RAW_URI': '', 'REQUEST_URI': ''})
+            self.assertEqual(response.headers['Location'], 'https://media.example.test:8443' + path)
+
+    def test_quest_https_redirect_skips_other_clients_resources_and_invalid_settings(self):
+        quest = {'User-Agent': 'OculusBrowser/40.0'}
+        with patch.dict(self.server.SETTINGS, quest_https_origin='https://media.example.test:8443'):
+            for user_agent in ['Mozilla/5.0 (Linux; Android) Chrome/130', 'Mozilla/5.0 Chrome/130']:
+                self.assertEqual(self.client.get('/login', headers={'User-Agent': user_agent}).status_code, 200)
+            cases = [('POST', '/login', quest), ('GET', '/api/settings', quest),
+                     ('GET', '/static/does-not-exist.js', quest),
+                     ('GET', '/media/0/Caf%C3%A9%20Clip%202.mp4', quest),
+                     ('GET', '/', {**quest, 'Range': 'bytes=0-9'}),
+                     ('GET', '/', {**quest, 'Sec-Fetch-Dest': 'empty'}),
+                     ('GET', '/', {**quest, 'Sec-Fetch-Mode': 'cors'})]
+            for method, url, headers in cases:
+                with self.subTest(method=method, url=url, headers=headers):
+                    response = self.client.open(url, method=method, headers=headers)
+                    self.assertFalse(response.headers.get('Location', '').startswith('https://'))
+        for origin in ['', 'http://media.example.test', '//media.example.test',
+                       'https://user:password@media.example.test', 'https://media.example.test/path',
+                       'https://media.example.test?next=x', 'https://media.example.test#fragment',
+                       'https://media.example.test:0', 'https://media.example.test:99999',
+                       'https://media.example.test////', 'https://[:::]',
+                       'https://media.example.test\r\nInjected: value']:
+            with self.subTest(origin=origin), patch.dict(self.server.SETTINGS, quest_https_origin=origin):
+                response = self.client.get('/login', headers=quest)
+                self.assertEqual(response.status_code, 200)
+
     def csrf(self, client=None):
         client = client or self.client
         client.get('/')

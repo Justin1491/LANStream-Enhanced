@@ -22,6 +22,7 @@ from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 from flask import (
     Flask, Response, abort, jsonify, redirect, render_template, request,
@@ -86,6 +87,7 @@ def load_settings() -> dict[str, str]:
         "port": "8061",
         "use_master_password": "false",
         "master_password": "",
+        "quest_https_origin": "",
         "transcoder": "auto",
         "directory_cache_ttl": "300",
         "directory_scan_timeout": "30",
@@ -1100,6 +1102,40 @@ def selected_transcoder(force_refresh: bool = False) -> dict:
         "tests": [(k, l, r[0], r[1]) for k, l, r in tests],
     }
     return _transcoder_cache
+
+
+@app.before_request
+def quest_https_redirect():
+    if (request.method not in {'GET', 'HEAD'} or request.headers.get('Range')
+            or 'OculusBrowser/' not in request.user_agent.string
+            or request.endpoint not in {'home', 'login', 'logout', 'browse', 'collection_page',
+                                        'video_detail', 'player', 'image_viewer', 'document_viewer',
+                                        'text_viewer', 'settings_page', 'cleanup.page'}
+            or request.headers.get('Sec-Fetch-Dest', 'document') != 'document'
+            or request.headers.get('Sec-Fetch-Mode', 'navigate') != 'navigate'
+            or request.is_secure):
+        return
+    origin = SETTINGS['quest_https_origin'].removesuffix('/')
+    if not re.fullmatch(r'https://(?:\[[0-9a-fA-F:.]+\]|[a-zA-Z0-9.-]+)(?::[0-9]{1,5})?', origin):
+        return
+    try:
+        target = urlsplit(origin)
+        if target.port is not None and not 1 <= target.port <= 65535:
+            return
+    except ValueError:
+        return
+    # A loopback TLS proxy preserves the canonical Host; forwarded headers are untrusted.
+    if (request.remote_addr in {'127.0.0.1', '::1'}
+            and request.host.lower() == target.netloc.lower()):
+        return
+    raw_uri = request.environ.get('RAW_URI') or request.environ.get('REQUEST_URI', '')
+    if not raw_uri.startswith('/') or raw_uri.startswith('//'):
+        raw_uri = quote(request.path, safe="/:@!$&'()*+,;=-._~")
+        if request.query_string:
+            raw_uri += '?' + request.query_string.decode('latin-1')
+    response = redirect(origin + raw_uri, code=302)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
 
 
 @app.before_request

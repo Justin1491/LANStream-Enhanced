@@ -73,6 +73,10 @@ Compatible sources play directly when the browser supports them. Sources requiri
 
 **VR180 on Meta Quest Browser.** Open an H.264 or HEVC MP4 over HTTPS. The headset icon opens the projection and hand-input options. Select **Enter VR** to start. Suggested VR videos also show **Enter VR** when the options are closed.
 
+To keep HTTP bookmarks while automatically sending Quest Browser page visits to HTTPS, add `quest_https_origin=https://media.example.test:8443` to the global section of `config.txt` and restart LANStream. Leave it empty (the default) to disable this. Use your server's fixed HTTPS origin with no credentials, path, query, or fragment, and configure HTTPS separately. For your own LAN server, Meta documents continuing past a local certificate warning. Quest page requests redirect before sign-in and preserve movie links and query parameters; sign in if prompted on the HTTPS site. Other browsers, POST requests, API calls, and media requests retain their existing URLs. [Meta’s headset testing guide](https://iwsdk.dev/guides/02-testing-experience.html)
+
+For a TLS proxy such as Caddy, keep LANStream's HTTP listener on `8061` and use a separate HTTPS port such as `8443`. Forward to LANStream over loopback and preserve the original HTTPS `Host` header, including `:8443`, to prevent redirect loops. LANStream recognizes the configured canonical Host only on loopback proxy requests and does not trust `X-Forwarded-*` headers. Avoid proxy-wide HTTP redirects if regular browser HTTP bookmarks should remain on HTTP.
+
 - **180° equirectangular · left/right** plays a side-by-side panorama through WebXR Media Layers. When WebXR is unavailable, Quest Browser’s fullscreen video controls can display this format in **180°**, **left/right 3D** mode.
 - **180° fisheye (equidistant) · left/right** plays two circular images side by side, with the left eye first. Each 180° circle must be centered and fill the smaller dimension of its half. LANStream preselects this mode for filenames marked fisheye. The Quest projects the original video in immersive WebXR. The server streams the file without transcoding.
 
