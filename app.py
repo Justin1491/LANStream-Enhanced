@@ -639,7 +639,7 @@ def _run_probe(path: Path, *, runner=None) -> dict[str, Any]:
         FFPROBE, "-v", "error",
         "-show_entries",
         "format=duration,size,format_name:"
-        "stream=index,codec_type,codec_name,width,height,channels:"
+        "stream=index,codec_type,codec_name,width,height,channels,avg_frame_rate:"
         "stream_tags=language,title",
         "-of", "json", str(path),
     ]
@@ -994,6 +994,7 @@ def stream_lists(info):
         }
         kind = stream.get("codec_type")
         if kind == "video":
+            item["frame_rate"] = stream.get("avg_frame_rate") or ""
             videos.append(item)
         elif kind == "audio":
             audios.append(item)
@@ -1707,7 +1708,22 @@ def player(root_index, relpath):
     if not is_video(source):
         abort(404)
     info = probe_with_saved_duration(root, relpath, source)
-    _, audios, subtitles = stream_lists(info)
+    videos, audios, subtitles = stream_lists(info)
+    video = videos[0] if videos else {}
+    vr180_available = (
+        source.suffix.lower() == '.mp4'
+        and video.get('codec') in {'h264', 'hevc'}
+    )
+    vr_projection = 'fisheye' if 'fisheye' in source.stem.lower() else 'equirect'
+    vr180_suggested = vr_projection == 'fisheye' or (
+        bool(video.get('height')) and video.get('width') == 2 * video['height']
+    )
+    if request.args.get('vr180') == '1':
+        if not vr180_available:
+            return render_template('error.html', message='VR180 requires a side-by-side H.264 or HEVC MP4.'), 415
+        return render_template('vr180.html', root_index=root_index, relpath=relpath,
+                               filename=source.name, frame_rate=video.get('frame_rate', '0/1'),
+                               vr_projection=vr_projection)
     d = duration_seconds(info)
     return render_template(
         "player.html", root_index=root_index, relpath=relpath,
@@ -1715,6 +1731,8 @@ def player(root_index, relpath):
         filename=source.name, duration=d, duration_text=fmt_duration(d),
         audios=audios, subtitles=subtitles,
         native=direct_playback_ok(source, info, audios),
+        vr180_available=vr180_available, vr180_suggested=vr180_suggested,
+        vr_projection=vr_projection, frame_rate=video.get('frame_rate', '0/1'),
         hls_token=secrets.token_hex(16),
     )
 

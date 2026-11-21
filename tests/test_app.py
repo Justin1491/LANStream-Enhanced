@@ -66,6 +66,7 @@ class ExplorerRoutes(unittest.TestCase):
             self.assertEqual(self.client.get('/video/0/Café Clip 2.mp4').status_code, 200)
             self.assertEqual(self.client.get('/play/0/Café Clip 2.mp4').status_code, 200)
             self.assertEqual(run.call_count, 1)
+            self.assertIn('avg_frame_rate', run.call_args.args[0][4])
             source.write_bytes(b'new and longer content')
             self.assertEqual(self.client.get('/play/0/Café Clip 2.mp4').status_code, 200)
             self.assertEqual(run.call_count, 2)
@@ -75,6 +76,70 @@ class ExplorerRoutes(unittest.TestCase):
             with patch.object(self.server, 'render_template', return_value=''):
                 self.assertEqual(self.client.get('/play/0/Private/Hidden.mp4').status_code, 404)
             self.assertEqual(run.call_count, 3)
+
+    def test_vr180_uses_original_hevc_and_respects_profile_scope(self):
+        info = {'streams': [
+            {'index': 0, 'codec_type': 'video', 'codec_name': 'hevc', 'width': 5760, 'height': 2880,
+             'avg_frame_rate': '60000/1001'},
+            {'index': 1, 'codec_type': 'audio', 'codec_name': 'aac'},
+        ]}
+        path = '/play/0/Caf%C3%A9%20Clip%202.mp4'
+        with patch.object(self.server, 'probe_with_saved_duration', return_value=info):
+            normal = self.client.get(path).get_data(as_text=True)
+            self.assertIn('id="enterVr" type="button" disabled>Enter VR</button>', normal)
+            self.assertIn('id="vrVideo" playsinline', normal)
+            self.assertNotRegex(normal, r'<video\b[^>]*\ssrc(?:\s|=|>)')
+            self.assertIn('data-frame-rate="60000/1001"', normal)
+            self.assertIn('const nativePlayback=false;', normal)
+            self.assertIn('value="equirect" selected', normal)
+            self.assertIn('class="vr-options-toggle" title="VR projection options" aria-label="VR projection options"', normal)
+            self.assertIn('<label id="vrHandChoice" hidden><input id="vrHands" type="checkbox" autocomplete="off" checked> Hand input</label>', normal)
+            self.assertLess(normal.index('class="vr-options-toggle"'), normal.index('id="enterVr"'))
+            self.assertIn('["INPUT","SELECT","BUTTON","SUMMARY"]', normal)
+            self.assertLess(normal.index('/static/vr180-fisheye.js'), normal.index('/static/vr180.js'))
+            vr = self.client.get(path + '?vr180=1')
+            self.assertEqual(vr.status_code, 200)
+            page = vr.get_data(as_text=True)
+            self.assertIn('data-src="/media/0/Caf%C3%A9%20Clip%202.mp4"', page)
+            self.assertIn('id="vrVideoStage" class="video-stage" hidden', page)
+            self.assertNotRegex(page, r'<video\b[^>]*\s(?:controls|src)(?:\s|=|>)')
+            self.assertIn('data-frame-rate="60000/1001"', page)
+            self.assertLess(page.index('/static/vr180-controllers.js'), page.index('/static/vr180.js'))
+            self.assertLess(page.index('/static/vr180-fisheye.js'), page.index('/static/vr180.js'))
+            self.assertIn('id="vrProjection"', page)
+            self.assertIn('<input id="vrHands" type="checkbox" autocomplete="off" checked>', page)
+            self.assertNotIn('/stream/', page)
+            self.assertEqual(self.client.get('/play/0/Private/Hidden.mp4?vr180=1').status_code, 404)
+            self.assertEqual(self.client.get('/media/0/Private/Hidden.mp4').status_code, 404)
+
+        info['streams'][0]['width'] = 3840
+        with patch.object(self.server, 'probe_with_saved_duration', return_value=info):
+            page = self.client.get(path).get_data(as_text=True)
+            self.assertIn('class="vr-options-toggle" title="VR projection options" aria-label="VR projection options"', page)
+            self.assertIn('id="enterVr"', page)
+            self.assertLess(page.index('id="enterVr"'), page.index('</details>'))
+            self.assertIn('value="equirect" selected', page)
+            self.assertEqual(self.client.get(path + '?vr180=1').status_code, 200)
+
+            (self.root / 'Dual Fisheye LEFT RIGHT.mp4').touch()
+            fisheye_path = '/play/0/Dual%20Fisheye%20LEFT%20RIGHT.mp4'
+            for suffix in ('', '?vr180=1'):
+                page = self.client.get(fisheye_path + suffix).get_data(as_text=True)
+                self.assertIn('value="fisheye" selected', page)
+                self.assertNotIn('<summary>VR projection options</summary>', page)
+
+        info['streams'][0]['codec_name'] = 'vp9'
+        with patch.object(self.server, 'probe_with_saved_duration', return_value=info):
+            self.assertNotIn('id="vrProjection"', self.client.get(path).get_data(as_text=True))
+            self.assertEqual(self.client.get(path + '?vr180=1').status_code, 415)
+
+        info['streams'][0]['codec_name'] = 'h264'
+        with patch.object(self.server, 'probe_with_saved_duration', return_value=info):
+            self.assertIn('id="vrProjection"', self.client.get(path).get_data(as_text=True))
+            self.assertEqual(self.client.get(path + '?vr180=1').status_code, 200)
+            (self.root / 'Clip.mkv').touch()
+            self.assertNotIn('id="vrProjection"', self.client.get('/play/0/Clip.mkv').get_data(as_text=True))
+            self.assertEqual(self.client.get('/play/0/Clip.mkv?vr180=1').status_code, 415)
 
     def test_probe_shares_concurrent_work_and_retries_failures(self):
         import json

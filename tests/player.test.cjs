@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const template = fs.readFileSync(path.join(__dirname, '../templates/player.html'), 'utf8');
 const script = template.match(/<script>([\s\S]*?)<\/script>/)[1];
 
-function player(direct = true, nativeHls = false, fetcher = async () => ({ok:true, json:async () => ({state:'ready'})}), autoplay = true) {
+function player(direct = true, nativeHls = false, fetcher = async () => ({ok:true, json:async () => ({state:'ready'})}), autoplay = true, vr = null) {
   const elements = {};
   for (const id of ['playerShell', 'video', 'playerMessage', 'playerControls', 'togglePlay',
     'back30', 'forward30', 'seek', 'currentLabel', 'volume', 'fullscreenTop',
@@ -25,6 +25,7 @@ function player(direct = true, nativeHls = false, fetcher = async () => ({ok:tru
       removeAttribute(name) { delete this[name]; },
     });
   }
+  if (vr) for (const id of ['enterVr', 'returnFromVr', 'vrShell']) elements[id] = {focus() {}};
   const qualityModes = ['normal', 'low'].map(value => Object.assign(new EventTarget(), {value, checked:false}));
   const document = Object.assign(new EventTarget(), {
     getElementById: id => elements[id] || null,
@@ -33,12 +34,58 @@ function player(direct = true, nativeHls = false, fetcher = async () => ({ok:tru
   Object.assign(elements.video, {readyState:1, querySelectorAll:() => [], load() {},
     canPlayType: type => nativeHls && type === 'application/vnd.apple.mpegurl' ? 'maybe' : ''});
   const window = Object.assign(new EventTarget(), {setTimeout, clearTimeout});
-  const context = vm.createContext({document, window, fetch:fetcher, AbortController});
+  const context = vm.createContext({document, window, fetch:fetcher, AbortController, lanstreamVr:vr});
   vm.runInContext(script.replace('{{ "true" if native else "false" }}', String(direct))
     .replace('{{ autoplay|tojson }}', String(autoplay))
     .replace('{{ duration }}', '60').replace(/{{.*?}}/g, '"/fixture"'), context);
   return {document, window, qualityModes, ...elements};
 }
+
+test('Enter VR unloads 2D, blocks hidden shortcuts, and returns paused at the VR position', () => {
+  let options, plays = 0, loads = 0;
+  const p = player(true, false, undefined, true, {start(value) { options=value; value.beforeStart(); }});
+  p.video.play = () => { plays++; return Promise.resolve(); };
+  p.video.pause = () => { p.video.paused = true; };
+  p.video.load = () => { loads++; };
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  p.video.currentTime = 23;p.video.volume = 0.5;
+  p.enterVr.onclick();
+  assert.equal(options.time, 23);
+  assert.equal(options.volume, 0.5);
+  assert.equal(p.video.src, undefined);
+  assert.equal(p.playerShell.hidden, true);
+  assert.equal(p.vrShell.hidden, false);
+  p.playerShell.requestFullscreen = () => assert.fail('Hidden player must ignore fullscreen shortcuts');
+  for(const key of [' ', 'f']) p.document.dispatchEvent(Object.assign(new Event('keydown'), {key}));
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  assert.equal(plays, 1);
+  options.onEnd(41);
+  assert.equal(p.seek.value, 41);
+  assert.equal(p.playerShell.hidden, false);
+  assert.equal(p.vrShell.hidden, true);
+  assert.equal(plays, 1, 'Return must wait for Play rather than autostart a second decoder');
+  p.togglePlay.onclick();
+  assert.equal(p.video.currentTime, 41);
+  assert.equal(plays, 2);
+  assert.equal(loads, 3);
+});
+
+test('Enter VR aborts pending HLS preparation and ignores its late completion', async () => {
+  let options, signal, release;
+  const p = player(false, true, (url, opts) => {signal=opts.signal;return new Promise(resolve=>{release=resolve;});}, true,
+    {start(value) { options=value; value.beforeStart(); }});
+  p.video.pause = () => {};
+  p.video.play = () => assert.fail('Abandoned HLS must never start playback');
+  p.window.dispatchEvent(new Event('DOMContentLoaded'));
+  p.enterVr.onclick();
+  assert.equal(signal.aborted, true);
+  release({ok:true,json:async()=>({state:'ready'})});
+  await new Promise(setImmediate);
+  assert.equal(p.video.src, undefined);
+  options.onEnd(17, 'VR unavailable');
+  assert.equal(p.seek.value, 17);
+  assert.equal(p.playerMessage.textContent, 'VR unavailable');
+});
 
 test('iPhone Safari enters and exits native video fullscreen and updates the button', async () => {
   const p = player();

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="lanstream-csrf" content="{{ csrf_token }}">
+  <title>{{ filename }} · VR180 · LANStream</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='vr180-controllers.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='vr180-fisheye.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='vr180.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='activity.js') }}" defer></script>
+</head>
+<body class="player-body vr-page">
+  <main class="player-shell">
+    <div class="player-top">
+      <a class="player-back" href="{{ url_for('player', root_index=root_index, relpath=relpath) }}">← Back to player</a>
+      <div class="player-title">{{ filename }}</div>
+      <label for="vrProjection">VR projection</label>
+      <select id="vrProjection" aria-label="VR projection">
+        <option value="equirect"{% if vr_projection == 'equirect' %} selected{% endif %}>180° equirectangular · left/right</option>
+        <option value="fisheye"{% if vr_projection == 'fisheye' %} selected{% endif %}>180° fisheye (equidistant) · left/right</option>
+      </select>
+      <label id="vrHandChoice" hidden><input id="vrHands" type="checkbox" autocomplete="off" checked> Hand input</label>
+      <button id="enterVr" type="button" hidden>Enter VR180</button>
+    </div>
+    <div id="vrVideoStage" class="video-stage" hidden>
+      <video id="video" playsinline disablepictureinpicture disableremoteplayback preload="metadata" data-frame-rate="{{ frame_rate }}" data-src="{{ url_for('media_file', root_index=root_index, relpath=relpath) }}"></video>
+    </div>
+    <div id="vrStatus" class="player-controls" role="status">In Quest Browser, fullscreen the video and select 180° and left/right 3D.</div>
+  </main>
+</body>
+</html>

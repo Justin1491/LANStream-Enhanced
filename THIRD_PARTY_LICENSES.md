@@ -2,7 +2,33 @@
 
 LANStream itself is released under **The Unlicense**.
 
-The Enhanced private test build includes FFmpeg 9.0.2 from the locally installed Gyan.dev full build and 7-Zip from the locally installed Windows package. Their license texts are included as ffmpeg-LICENSE.txt and 7zip-LICENSE.txt. Match corresponding-source requirements to these exact tools before redistribution.
+The VR180 transport symbols use paths from [Tabler Icons](https://github.com/tabler/tabler-icons).
+
+```text
+MIT License
+
+Copyright (c) 2020-2026 Paweł Kuna
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The Enhanced private test build includes FFmpeg 9.1 from the Gyan.dev full build and 7-Zip from the locally installed Windows package. Their license texts are included as ffmpeg-LICENSE.txt and 7zip-LICENSE.txt. Match corresponding-source requirements to these exact tools before redistribution.
 
 The Windows distribution of LANStream includes separately licensed
 third-party software. Those components are not covered by The Unlicense.
@@ -41,7 +67,7 @@ These executables are from the following Gyan.dev FFmpeg build:
 
 ```text
 FFmpeg 64-bit static Windows build
-Version: 9.0.2-full_build-www.gyan.dev
+Version: 9.1-full_build-www.gyan.dev
 Build provider: https://www.gyan.dev/ffmpeg/builds/
 License: GNU General Public License version 3
 ```
@@ -58,7 +84,7 @@ remain independent third-party components under their own license.
 The FFmpeg build above corresponds to FFmpeg release:
 
 ```text
-9.0.2
+9.1
 ```
 
 When distributing the Windows binary release, the corresponding FFmpeg source
@@ -70,10 +96,10 @@ corresponding FFmpeg source archive as a separate downloadable release asset
 alongside the Windows binary ZIP, and clearly identify it as the source
 corresponding to the bundled FFmpeg/FFprobe executables.
 
-Upstream FFmpeg source repository:
+Upstream FFmpeg revision used by this Gyan.dev build:
 
 ```text
-https://github.com/FFmpeg/FFmpeg
+https://github.com/FFmpeg/FFmpeg/commit/74e4393595
 ```
 
 Gyan.dev FFmpeg build information:

@@ -71,6 +71,19 @@ Two thumbnail workers are used by default for interactive/manual work. Set `thum
 
 Compatible sources play directly when the browser supports them. Sources requiring conversion, including HEVC/H.265 video, use H.264 transcoding with stereo AAC audio. The player provides seeking, audio and supported subtitle track selection, fullscreen controls, and a Favorite button.
 
+**VR180 on Meta Quest Browser.** Open an H.264 or HEVC MP4 over HTTPS. The headset icon opens the projection and hand-input options. Select **Enter VR** to start. Suggested VR videos also show **Enter VR** when the options are closed.
+
+- **180° equirectangular · left/right** plays a side-by-side panorama through WebXR Media Layers. When WebXR is unavailable, Quest Browser’s fullscreen video controls can display this format in **180°**, **left/right 3D** mode.
+- **180° fisheye (equidistant) · left/right** plays two circular images side by side, with the left eye first. Each 180° circle must be centered and fill the smaller dimension of its half. LANStream preselects this mode for filenames marked fisheye. The Quest projects the original video in immersive WebXR. The server streams the file without transcoding.
+
+In VR, pull the trigger to show the panel. Hold the trigger on the timeline and drag to seek, or grab a blank spot between buttons to move the panel. The panel hides after five seconds and the controllers hide after three seconds of inactivity.
+
+Hand input is on by default. To use controllers only, open the headset icon and uncheck **Hand input**, or select **Hands on** in the immersive panel to turn it off. Hold your thumb and index finger together for 0.7 seconds to show the panel, then release. A panel opened this way stays up until you hold another pinch to hide it. With the panel visible, a beam and outlined dot show where your hand points, including over the movie. Point at a button and pinch briefly to select it. Pinch and drag the timeline to seek or a blank area to move the panel. Quest reserves palm-facing menu gestures for system controls. [Meta's WebXR hand tracking guide](https://developers.meta.com/vr/documentation/web/webxr-hands/)
+
+On Quest 3, LANStream loads the ringless Touch Plus models for the controller profile reported by the browser. The panel uses the headset's native projection scale when available. Opening a system menu that takes XR focus dismisses LANStream's panel. Pull the trigger after returning to the movie to show it again.
+
+The VR controls follow Meta’s guidance for [WebXR Media Layers](https://developers.meta.com/vr/documentation/web/webxr-layers/), [controller grip and target-ray poses](https://developers.meta.com/vr/documentation/iwsdk/concepts/xr-input/xr-origin/), and [trigger and pinch input](https://developers.meta.com/vr/design/interactions-input-mappings/).
+
 Video metadata is remembered in server memory for up to five minutes to avoid repeated FFprobe work when opening the same file. File identity, size, or timestamp changes trigger a new probe; restarting the server clears the cache.
 
 - **Normal** preserves the normal playback profile.

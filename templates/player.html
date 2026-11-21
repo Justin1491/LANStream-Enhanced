@@ -31,6 +31,21 @@
 <button id="back30" type="button" title="Back 30 seconds" aria-label="Back 30 seconds">&lt;&lt;</button>
 <button id="forward30" type="button" title="Forward 30 seconds" aria-label="Forward 30 seconds">&gt;&gt;</button>
 </div>
+{% if vr180_available %}
+<details class="vr-options">
+<summary class="vr-options-toggle" title="VR projection options" aria-label="VR projection options"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8.5h18v6.25A2.25 2.25 0 0 1 18.75 17h-4.5L12 14l-2.25 3h-4.5A2.25 2.25 0 0 1 3 14.75z"/></svg></summary>
+<div class="vr-options-panel">
+<label for="vrProjection">VR projection</label>
+<select id="vrProjection" aria-label="VR projection">
+<option value="equirect"{% if vr_projection == 'equirect' %} selected{% endif %}>180° equirectangular · left/right</option>
+<option value="fisheye"{% if vr_projection == 'fisheye' %} selected{% endif %}>180° fisheye (equidistant) · left/right</option>
+</select>
+<label id="vrHandChoice" hidden><input id="vrHands" type="checkbox" autocomplete="off" checked> Hand input</label>
+{% if not vr180_suggested %}<button id="enterVr" type="button" disabled>Enter VR</button>{% endif %}
+</div>
+</details>
+{% if vr180_suggested %}<button id="enterVr" type="button" disabled>Enter VR</button>{% endif %}
+{% endif %}
 <div class="quality-mode" role="radiogroup" aria-label="Stream quality">
 <label><input type="radio" name="qualityMode" value="normal" checked> Normal</label>
 <label><input type="radio" name="qualityMode" value="low"> Low Bandwidth</label>
@@ -49,6 +64,17 @@
 </div>
 </div>
 <details id="playbackDiagnostics" hidden><summary>Playback details</summary><pre id="playbackReport"></pre></details>
+{% if vr180_available %}
+<div id="vrShell" class="player-shell" hidden>
+<div class="player-top"><button id="returnFromVr" type="button">Return to player</button><div class="player-title">{{ filename }}</div>
+</div>
+<div id="vrVideoStage" class="video-stage" hidden><video id="vrVideo" playsinline disablepictureinpicture disableremoteplayback preload="none" data-frame-rate="{{ frame_rate }}" data-src="{{ url_for('media_file', root_index=root_index, relpath=relpath) }}"></video></div>
+<div id="vrStatus" class="player-controls" role="status">In Quest Browser, fullscreen the video and select 180° and left/right 3D.</div>
+</div>
+<script src="{{ url_for('static', filename='vr180-controllers.js') }}" defer></script>
+<script src="{{ url_for('static', filename='vr180-fisheye.js') }}" defer></script>
+<script src="{{ url_for('static', filename='vr180.js') }}" defer></script>
+{% endif %}
 <script>
 const nativePlayback={{ "true" if native else "false" }};
 const autoplay={{ autoplay|tojson }};
@@ -67,11 +93,11 @@ const hlsBase={{ url_for('hls_media',root_index=root_index,relpath=relpath)|tojs
 const hlsToken={{ hls_token|tojson }};
 const nativeHls=!!(video.canPlayType&&video.canPlayType('application/vnd.apple.mpegurl'));
 const subtitleBase={{ url_for('subtitle',root_index=root_index,relpath=relpath)|tojson }};
-let logicalOffset=0,started=false,dragging=false,lowBandwidth=false,controlsTimer=null,hlsSerial=0,hlsResumeAt=null,directSeekAt=null,preparing=false,lastReport=null,needsPlayGesture=false;
+let logicalOffset=0,started=false,dragging=false,lowBandwidth=false,controlsTimer=null,hlsSerial=0,hlsResumeAt=null,directSeekAt=null,preparing=false,lastReport=null,needsPlayGesture=false,hlsPreparation=null;
 
 function fmt(sec){sec=Math.max(0,Math.floor(sec||0));const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=sec%60;return h?`${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`:`${m}:${String(s).padStart(2,"0")}`;}
 function usingDirect(){return nativePlayback&&!lowBandwidth;}
-function logicalTime(){return preparing?logicalOffset:usingDirect()?(directSeekAt??(video.currentTime||0)):logicalOffset+(video.currentTime||0);}
+function logicalTime(){return !started||preparing?logicalOffset:usingDirect()?(directSeekAt??(video.currentTime||0)):logicalOffset+(video.currentTime||0);}
 function audio(){return audioSelect?audioSelect.value:"";}
 function msg(t){message.textContent=t;message.classList.toggle("hidden",!t);}
 function playButton(playing){const label=playing?"Pause":"Play";togglePlay.setAttribute("aria-label",label);togglePlay.setAttribute("title",label);}
@@ -91,6 +117,7 @@ function playbackReport(report){
 }
 async function prepareHls(url,generation){
  const controller=new AbortController();
+ hlsPreparation=controller;
  const timeout=window.setTimeout(()=>controller.abort(),90000);
  try{
   while(generation===hlsSerial){
@@ -111,7 +138,7 @@ async function prepareHls(url,generation){
   if(generation===hlsSerial){preparing=false;msg(controller.signal.aborted
    ?'The server has not published a playable stream after 90 seconds. Open Playback details.'
    :'Unable to check playback startup. Reload the page and try again.');}
- }finally{window.clearTimeout(timeout);}
+ }finally{window.clearTimeout(timeout);if(hlsPreparation===controller)hlsPreparation=null;}
 }
 function transcode(at){
  hlsResumeAt=null;directSeekAt=null;needsPlayGesture=false;
@@ -180,7 +207,7 @@ function updateFullscreenState(){
  showControls();
 }
 
-togglePlay.onclick=()=>{showControls();if(preparing)return;if(!started)return start(0);if(needsPlayGesture){needsPlayGesture=false;video.play().catch(playbackRejected);return;}if(video.paused&&nativeHls&&!usingDirect())return go(video.ended?0:logicalTime());video.paused?video.play().catch(playbackRejected):video.pause();};
+togglePlay.onclick=()=>{showControls();if(preparing)return;if(!started)return start(logicalOffset);if(needsPlayGesture){needsPlayGesture=false;video.play().catch(playbackRejected);return;}if(video.paused&&nativeHls&&!usingDirect())return go(video.ended?0:logicalTime());video.paused?video.play().catch(playbackRejected):video.pause();};
 back30.onclick=()=>{showControls();go(logicalTime()-30);};
 forward30.onclick=()=>{showControls();go(logicalTime()+30);};
 video.addEventListener("playing",()=>{needsPlayGesture=false;msg("");playButton(true);scheduleControlsHide();});
@@ -193,6 +220,23 @@ seek.onchange=()=>{dragging=false;go(Number(seek.value));scheduleControlsHide();
 video.addEventListener("timeupdate",()=>{if(dragging)return;const t=Math.min(totalDuration,logicalTime());seek.value=t;currentLabel.textContent=fmt(t);});
 volume.oninput=()=>{video.volume=Number(volume.value);showControls();};
 fullscreenTop.onclick=toggleFullscreen;
+const enterVr=document.getElementById('enterVr'),vrShell=document.getElementById('vrShell');
+if(enterVr){
+ enterVr.onclick=()=>globalThis.lanstreamVr.start({
+  time:logicalTime(),volume:video.volume,
+  beforeStart(){
+   ++hlsSerial;hlsPreparation?.abort();preparing=false;started=false;hlsResumeAt=directSeekAt=null;
+   video.pause();video.removeAttribute('src');video.load();clearControlsTimer();
+   playerShell.hidden=true;vrShell.hidden=false;
+  },
+  onEnd(at,error){
+   logicalOffset=Math.max(0,Math.min(totalDuration,at));seek.value=logicalOffset;currentLabel.textContent=fmt(logicalOffset);
+   vrShell.hidden=true;playerShell.hidden=false;playButton(false);showControls();
+   msg(error||'Tap Play to resume playback.');enterVr.focus();
+  },
+ });
+ document.getElementById('returnFromVr').onclick=()=>globalThis.lanstreamVr.stop();
+}
 
 document.querySelectorAll('input[name="qualityMode"]').forEach(radio=>{
  radio.addEventListener("change",()=>{
@@ -209,13 +253,14 @@ playerControls.addEventListener("pointerenter",()=>{clearControlsTimer();playerS
 playerControls.addEventListener("pointerleave",scheduleControlsHide);
 
 document.addEventListener("keydown",event=>{
+ if(playerShell.hidden)return;
  if(event.key==="f"||event.key==="F"){event.preventDefault();toggleFullscreen();return;}
- if(event.key===" "&&!["INPUT","SELECT","BUTTON"].includes(event.target.tagName)){event.preventDefault();togglePlay.click();return;}
+ if(event.key===" "&&!["INPUT","SELECT","BUTTON","SUMMARY"].includes(event.target.tagName)){event.preventDefault();togglePlay.click();return;}
  showControls();
 });
 document.addEventListener("fullscreenchange",updateFullscreenState);
 document.addEventListener("webkitfullscreenchange",updateFullscreenState);
 video.addEventListener("webkitbeginfullscreen",updateFullscreenState);
 video.addEventListener("webkitendfullscreen",updateFullscreenState);
-window.addEventListener("DOMContentLoaded",()=>{if(autoplay)start(0);else msg("Tap Play to start playback.");updateFullscreenState();});
+window.addEventListener("DOMContentLoaded",()=>{if(playerShell.hidden)return;if(autoplay)start(0);else msg("Tap Play to start playback.");updateFullscreenState();});
 </script><script src="{{ url_for('static', filename='favorite.js') }}" defer></script><script src="{{ url_for('static', filename='activity.js') }}" defer></script></body></html>
